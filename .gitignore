@@ -1,0 +1,9 @@
+node_modules/
+.run/
+.env
+.env.*
+*.sqlite*
+*.log
+*.bak
+wake-config.json
+test-results/

@@ -1,0 +1,30 @@
+name: Coordinator checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm test
+      - run: node --check public/app.js
+      - name: Parse Windows scripts
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          foreach ($script in @('launch.ps1', 'install-wake.ps1')) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $script), [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count) { throw ($errors | Out-String) }
+          }
