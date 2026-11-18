@@ -1,4 +1,5 @@
 const $ = selector => document.querySelector(selector);
+const workId = new URLSearchParams(location.search).get('workspace') || 'local';
 const labels = { queued: 'Chờ nhận', in_progress: 'Đang làm', blocked: 'Đang vướng', review: 'Chờ review', done: 'Hoàn tất' };
 const names = Object.assign(Object.create(null), { user: 'Bạn', codex: 'Codex', antigravity: 'Antigravity', all: 'Hộp thư chung' });
 const state = { board: null, selected: null, detail: null, dirty: false, messages: new Map(), view: 'tasks' };
@@ -9,7 +10,7 @@ let queueVersion = 0, queueCursor = null, queueNext = null;
 const queueLabels = { queued: 'Chờ chuyển', sending: 'Đang chuyển', accepted: 'Đã chuyển · chờ ACK',
   acknowledged: 'Đã ACK qua MCP', failed: 'Chưa gửi được', unknown: 'Chưa rõ kết quả', cancelled: 'Đã hủy' };
 const appLabels = { codex: 'Codex', antigravity: 'Antigravity', 'claude-desktop': 'Claude Desktop', cursor: 'Cursor',
-  vscode: 'VS Code', 'gemini-cli': 'Gemini CLI', stdio: 'MCP STDIO' };
+  vscode: 'VS Code', 'gemini-cli': 'Gemini CLI', opencode: 'OpenCode 2', stdio: 'MCP STDIO' };
 
 function choices(select, entries) {
   const key = JSON.stringify(entries);
@@ -38,9 +39,9 @@ function showNotice(message, error = false) {
 }
 
 async function api(url, method = 'GET', body) {
-  const options = { method, headers: {} };
+  const options = { method, headers: { 'X-Coordinator-Workspace': workId } };
   if (body !== undefined) {
-    options.headers = { 'Content-Type': 'application/json', 'X-Coordinator-Token': state.board?.token || '' };
+    Object.assign(options.headers, { 'Content-Type': 'application/json', 'X-Coordinator-Token': state.board?.token || '' });
     options.body = JSON.stringify(body);
   }
   const response = await fetch(url, options);
@@ -68,11 +69,13 @@ function renderBoard() {
     names[agent.actor] = agent.name;
     return [agent.actor, agent.name];
   });
+  const available = options.filter(([id]) => state.board.agents.find(agent => agent.actor === id).state === 'active');
   choices($('#owner-filter'), [['', 'Mọi agent'], ...options]);
-  choices($('#task-form').elements.owner, options);
+  choices($('#task-form').elements.owner, available);
+  if (!state.board.demo) $('#new-task').disabled = !available.length;
   choices($('#known-models'), [...new Set(state.board.agents.map(agent => agent.model).filter(Boolean))].map(model => [model, model]));
-  choices($('#message-form').elements.recipient, [['all', names.all], ...options]);
-  choices($('#queue-actor'), [['', 'Tất cả'], ...options.filter(([id]) => ['codex', 'antigravity'].includes(id))]);
+  choices($('#message-form').elements.recipient, [['all', names.all], ...available]);
+  choices($('#queue-actor'), [['', 'Tất cả'], ...options]);
   if (choices($('#profile-select'), [...options, ['', '＋ Thêm hồ sơ mới']]) && !state.board.demo && !profileKey) {
     $('#profile-select').value = options[0]?.[0] ?? '';
     fillProfile();
@@ -101,7 +104,8 @@ function renderBoard() {
     const info = element('div');
     info.append(element('div', 'agent-name', names[agent.actor]), element('div', 'agent-subtitle',
       agent.lastSeen ? `MCP truy cập lúc ${time(agent.lastSeen)}` : 'Chờ app truy cập MCP'),
-      element('div', 'hint', [agent.appLabel || appLabels[agent.app], agent.model].filter(Boolean).join(' · ')));
+      element('div', 'hint', [agent.appLabel || appLabels[agent.app], agent.model,
+        { paused: 'Tạm ngưng', archived: 'Đã lưu trữ' }[agent.state]].filter(Boolean).join(' · ')));
     const stats = element('div', 'agent-stats');
     stats.append(element('b', '', `${tasks.filter(task => task.owner === agent.actor && task.status !== 'done').length} việc đang mở`),
       element('small', '', `${agent.unread} tin chưa xác nhận đọc`));
@@ -159,7 +163,7 @@ async function selectTask(id) {
   renderTasks();
 }
 
-function renderDetail({ task, events, messages }) {
+function renderDetail({ task, review, events, messages }) {
   const panel = $('#task-detail');
   panel.replaceChildren();
   const meta = element('div', 'detail-meta');
@@ -170,7 +174,7 @@ function renderDetail({ task, events, messages }) {
     <label>Cập nhật mới nhất<textarea name="note" rows="3" maxlength="4000" placeholder="Đã làm gì, đang vướng gì, cần ai phản hồi…"></textarea></label>
     <label>Link Issue hoặc PR<input name="link" type="url" maxlength="2048" placeholder="https://github.com/…"></label>
     <button class="primary" type="submit">Lưu cập nhật</button>`;
-  for (const [value, label] of Object.entries(labels)) form.elements.status.add(new Option(label, value));
+  for (const [value, label] of Object.entries(labels)) if (!review || !['review','done'].includes(value)) form.elements.status.add(new Option(label, value));
   for (const name of ['status', 'progress', 'note', 'link']) form.elements[name].value = task[name];
   form.addEventListener('input', () => { state.dirty = true; });
   form.elements.status.addEventListener('change', () => {
@@ -186,8 +190,9 @@ function renderDetail({ task, events, messages }) {
     await refresh();
     showNotice('Đã lưu tiến độ. Hai bên có thể đọc cập nhật qua MCP.');
   }));
-  if (!state.board.demo) panel.append(form);
+  if (!state.board.demo && (!review || review.stage === 'work')) panel.append(form);
   else panel.append(element('p', 'hint', `Tiến độ ${task.progress}%${task.note ? ` · ${task.note}` : ''}`));
+  if (!state.board.demo) renderTaskWorkflow(panel, task, review);
   const discussion = element('button', 'text-button', '↗ Trao đổi về công việc này');
   discussion.addEventListener('click', () => {
     setView('inbox');
@@ -212,6 +217,72 @@ function renderDetail({ task, events, messages }) {
     row.append(element('span', 'event-dot'), content);
     panel.append(row);
   }
+}
+
+function renderTaskWorkflow(panel, task, flow) {
+  const section = element('section', 'workflow');
+  section.append(element('h3', '', 'Bàn giao và review'));
+  if (flow) {
+    section.append(element('p', '', `${{ work:'Đang làm', review:'Chờ người review', approval:'Chờ chủ dự án duyệt', approved:'Đã nghiệm thu' }[flow.stage]} · Review: ${names[flow.reviewer] ?? flow.reviewer}`),
+      element('p', 'workflow-criteria', flow.criteria));
+  }
+  async function save(suffix, payload) {
+    await api(`/api/tasks/${task.id}/${suffix}`, 'POST', { ...payload, revision: task.revision });
+    await selectTask(task.id);
+    await refresh();
+  }
+  if (task.status !== 'done') {
+    const possible = state.board.agents.filter(agent => agent.state === 'active' && agent.actor !== task.owner);
+    if (flow) {
+      const steps = { work: [['submit','Gửi review']], review: [['changes','Yêu cầu sửa'],['recommend','Chuyển chủ dự án duyệt']],
+        approval: [['changes','Yêu cầu sửa'],['approve','Nghiệm thu công việc']] }[flow.stage] ?? [];
+      if (steps.length) {
+        const note = element('textarea'); note.rows = 2; note.maxLength = 3500;
+        const label = element('label', '', 'Ghi chú bước tiếp theo (bắt buộc khi yêu cầu sửa)'); label.append(note);
+        section.append(label);
+        const row = element('div', 'setup-actions');
+        for (const [action, title] of steps) {
+          const button = element('button', action === 'approve' ? 'primary' : 'secondary', title);
+          button.addEventListener('click', async () => {
+            if (button.disabled) return;
+            button.disabled = true;
+            try { await save('review-action', { action, note: note.value }); }
+            catch (error) { showNotice(error.message, true); }
+            finally { button.disabled = false; }
+          });
+          row.append(button);
+        }
+        section.append(row);
+      }
+    }
+    if (possible.length) {
+      const settings = element('details'), reviewForm = element('form');
+      settings.append(element('summary', '', flow ? 'Đổi người review hoặc tiêu chí' : 'Thêm người review và tiêu chí'));
+      const select = element('select');
+      select.append(...possible.map(agent => new Option(agent.name, agent.actor)));
+      if (possible.some(agent => agent.actor === flow?.reviewer)) select.value = flow.reviewer;
+      const reviewerLabel = element('label', '', 'Người review'); reviewerLabel.append(select);
+      const criteria = element('textarea'); criteria.rows = 3; criteria.required = true; criteria.maxLength = 4000;
+      criteria.value = flow?.criteria ?? '';
+      const criteriaLabel = element('label', '', 'Tiêu chí nghiệm thu'); criteriaLabel.append(criteria);
+      const submit = element('button', 'secondary', 'Lưu quy trình'); submit.type = 'submit';
+      reviewForm.append(reviewerLabel, criteriaLabel, submit);
+      reviewForm.addEventListener('submit', event => submitForm(event, () => save('review', { reviewer: select.value, criteria: criteria.value })));
+      settings.append(reviewForm); section.append(settings);
+      const transferable = possible.filter(agent => agent.actor !== flow?.reviewer);
+      if (transferable.length) {
+        const transfer = element('details'), transferForm = element('form');
+        transfer.append(element('summary', '', 'Chuyển người phụ trách'));
+        const owner = element('select'); owner.append(...transferable.map(agent => new Option(agent.name, agent.actor)));
+        const ownerLabel = element('label', '', 'Bên nhận bàn giao'); ownerLabel.append(owner);
+        const button = element('button', 'secondary', 'Chuyển việc'); button.type = 'submit';
+        transferForm.append(ownerLabel, button);
+        transferForm.addEventListener('submit', event => submitForm(event, () => save('transfer', { owner: owner.value })));
+        transfer.append(transferForm); section.append(transfer);
+      }
+    }
+  }
+  panel.append(section);
 }
 
 function renderMessages() {
@@ -252,9 +323,13 @@ async function loadBoard() {
     state.board = await api('/api/state');
     const demo = state.board.demo;
     $('#data-location').textContent = demo ? 'Kho tạm · chỉ dùng dữ liệu mẫu' : state.board.dataDirectory;
+    $('#backup-workspace-path').textContent = demo ? '' : `Kho đang xem: ${state.board.dataDirectory}`;
     $('#connection-state').textContent = 'Đã đồng bộ với kho local';
     $('#new-task').hidden = $('#compose-panel').hidden = $('#mark-read').hidden = $('#connection-setup').hidden = Boolean(demo);
     $('#queue-nav').hidden = Boolean(demo);
+    $('#workspace-controls').hidden = Boolean(demo);
+    choices($('#workspace-select'), state.board.workspaces.map(space => [space.id, space.name]));
+    $('#workspace-select').value = state.board.workspace;
     renderDemo(demo);
     renderBoard();
     renderWake();
@@ -343,6 +418,26 @@ for (const button of document.querySelectorAll('[data-view]')) button.addEventLi
 $('#owner-filter').addEventListener('change', renderTasks);
 $('#status-filter').addEventListener('change', renderTasks);
 $('#new-task').addEventListener('click', () => $('#task-dialog').showModal());
+const taskTemplates = {
+  implementation: 'Mục tiêu:\n\nPhạm vi thay đổi:\n\nCách kiểm thử:\n\nTiêu chí nghiệm thu:\n',
+  review: 'PR / phiên bản cần review:\n\nĐiểm cần chú ý:\n\nKiểm thử kỳ vọng:\n\nKết quả cần bàn giao:\n',
+  research: 'Câu hỏi cần trả lời:\n\nNguồn và giới hạn:\n\nCác phương án:\n\nĐề xuất và lý do:\n'
+};
+$('#task-template').addEventListener('change', event => {
+  const details = $('#task-form').elements.details;
+  if (!details.value.trim() || Object.values(taskTemplates).includes(details.value)) details.value = taskTemplates[event.target.value] ?? '';
+});
+function switchWorkspace(id) {
+  const url = new URL(location.href);
+  if (id === 'local') url.searchParams.delete('workspace');
+  else url.searchParams.set('workspace', id);
+  location.assign(url);
+}
+$('#workspace-select').addEventListener('change', event => switchWorkspace(event.target.value));
+$('#workspace-form').addEventListener('submit', event => submitForm(event, async () => {
+  const created = await api('/api/workspaces', 'POST', Object.fromEntries(new FormData(event.currentTarget)));
+  switchWorkspace(created.id);
+}));
 $('#close-dialog').addEventListener('click', () => $('#task-dialog').close());
 $('#task-form').addEventListener('submit', event => submitForm(event, async () => {
   const form = $('#task-form');
@@ -374,6 +469,10 @@ $('#mark-read').addEventListener('click', async () => {
 function renderProfileSeen() {
   const selected = state.board.agents.find(agent => agent.actor === $('#profile-select').value);
   $('#profile-seen').textContent = selected?.lastSeen ? `Lần gọi MCP cuối của hồ sơ: ${time(selected.lastSeen)}` : 'Chưa thấy hồ sơ này gọi MCP.';
+  $('#profile-life').hidden = !selected;
+  $('#profile-life-status').textContent = selected ? { active: 'Đang hoạt động', paused: 'Đã tạm ngưng', archived: 'Đã lưu trữ' }[selected.state] : '';
+  $('#profile-toggle').textContent = selected?.state === 'active' ? 'Tạm ngưng' : 'Kích hoạt lại';
+  $('#profile-archive').hidden = selected?.state === 'archived';
 }
 
 function showAppField() {
@@ -395,8 +494,8 @@ function fillProfile() {
   form.elements.app.disabled = ['codex', 'antigravity'].includes(id);
   showAppField();
   $('#profile-guide').hidden = !current;
-  if (!current) return;
   renderProfileSeen();
+  if (!current) return;
   $('#profile-config').textContent = 'Đang tải cấu hình…';
   $('#profile-copy').disabled = true;
   api(`/api/agents/${id}`).then(config => {
@@ -431,6 +530,19 @@ $('#profile-copy').addEventListener('click', async () => {
   catch { showNotice('Hãy chọn và sao chép cấu hình bên dưới.', true); }
 });
 $('#profile-check').addEventListener('click', () => refresh());
+for (const id of ['profile-toggle','profile-archive']) $(`#${id}`).addEventListener('click', async event => {
+  const button = event.currentTarget;
+  const profile = state.board.agents.find(agent => agent.actor === $('#profile-select').value);
+  if (!profile) return;
+  const next = id === 'profile-archive' ? 'archived' : profile.state === 'active' ? 'paused' : 'active';
+  button.disabled = true;
+  try {
+    await api(`/api/agents/${profile.actor}/state`, 'PATCH', { state: next });
+    if (refreshing) await refreshing;
+    await refresh();
+  } catch (error) { showNotice(error.message, true); }
+  finally { button.disabled = false; }
+});
 $('#support-download').addEventListener('click', async () => {
   try {
     const report = await api('/api/support');
@@ -512,7 +624,8 @@ function renderWake() {
   if (report) {
     const labels = { configured: 'Đã tìm thấy tệp chạy bridge', not_configured: 'Chưa cấu hình bridge',
       config_unreadable: 'Không đọc được cấu hình bridge', invalid_config: 'Cấu hình bridge không hợp lệ',
-      invalid_executable: 'Đường dẫn bridge không hợp lệ', unavailable_executable: 'Không mở được tệp chạy bridge' };
+      invalid_executable: 'Đường dẫn bridge không hợp lệ', unavailable_executable: 'Không mở được tệp chạy bridge',
+      missing_password: 'Worker chưa có mật khẩu OpenCode' };
     readiness.replaceChildren(...report.agents.map(agent => {
       const card = element('div', 'wake-readiness-card');
       card.append(element('strong', '', names[agent.actor]),
@@ -524,12 +637,20 @@ function renderWake() {
   }
   const panel = $('#wake-targets');
   $('#wake-setup').hidden = panel.hidden = demo;
-  if (!demo && !panel.childElementCount) for (const actor of ['codex', 'antigravity']) {
+  const wakeAgents = (report?.agents ?? []).map(entry => state.board.agents.find(agent => agent.actor === entry.actor))
+    .filter(agent => agent?.state === 'active');
+  for (const form of [...panel.children]) if (!wakeAgents.some(agent => agent.actor === form.dataset.actor)) form.remove();
+  for (const agent of wakeAgents) {
+    const actor = agent.actor;
+    if ([...panel.children].some(form => form.dataset.actor === actor && form.dataset.app === agent.app)) continue;
+    [...panel.children].find(form => form.dataset.actor === actor)?.remove();
     const form = element('form', 'config-card');
     form.dataset.actor = actor;
-    const label = element('label', '', `${names[actor]} · UUID chat đích`);
+    form.dataset.app = agent.app;
+    const openCode = agent.app === 'opencode';
+    const label = element('label', '', `${names[actor]} · ${openCode ? 'ID session (ses…)' : 'UUID chat đích'}`);
     const input = element('input'); input.name = 'conversationId'; input.required = true;
-    input.pattern = '[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}';
+    input.pattern = openCode ? 'ses[A-Za-z0-9_\\-]{1,120}' : '[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}';
     label.append(input);
     const mode = element('select'); mode.name = 'enabled';
     mode.add(new Option('Tắt đánh thức', 'false')); mode.add(new Option('Bật đánh thức', 'true'));

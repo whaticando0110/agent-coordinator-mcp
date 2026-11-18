@@ -6,6 +6,7 @@
   "engines": { "node": ">=24" },
   "scripts": {
     "serve": "node server.mjs",
+    "worker": "node wake-worker.mjs",
     "demo": "node demo.mjs",
     "doctor": "node doctor.mjs",
     "backup": "node data-tools.mjs backup",

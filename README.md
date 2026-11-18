@@ -1,6 +1,6 @@
 # Agent Coordinator MCP
 
-Một dashboard local để giao việc, theo dõi tiến độ, trao đổi và xác nhận đã nhận lời nhắc. Codex, Antigravity và các app hỗ trợ MCP STDIO có thể kết nối bằng hồ sơ riêng trên cùng một kho SQLite.
+Một dashboard local để giao việc, review, trao đổi và xác nhận đã nhận lời nhắc. Codex, Antigravity và các app hỗ trợ MCP STDIO kết nối bằng hồ sơ riêng; mỗi dự án có kho SQLite độc lập.
 
 ## Xem thử trong một phút
 
@@ -26,9 +26,9 @@ npm run serve
 
 Mở `http://127.0.0.1:4330`. Trên Windows cũng có thể bấm đúp `Open Coordinator.cmd`; launcher sẽ cài dependency nếu cần. Dữ liệu mặc định nằm tại `%LOCALAPPDATA%/AgentCoordinatorMCP` hoặc `~/AgentCoordinatorMCP` nếu không có `LOCALAPPDATA`. `COORDINATOR_DATA_DIR` nhận đường dẫn tuyệt đối tới kho khác; `COORDINATOR_PORT` đổi cổng. Bản này không tự nối, nhập hay sửa dữ liệu điều phối của repo game.
 
-Trong **Kết nối MCP → Hồ sơ app và model**, chọn hồ sơ có sẵn hoặc thêm hồ sơ với mã riêng. Có mẫu cho Codex, Antigravity, [Claude Desktop](https://py.sdk.modelcontextprotocol.io/get-started/real-host/), [Cursor](https://docs.cursor.com/context/model-context-protocol), [VS Code](https://code.visualstudio.com/docs/agents/reference/mcp-configuration) và [Gemini CLI](https://geminicli.com/docs/tools/mcp-server/). Chọn **App MCP STDIO khác** nếu muốn dùng app tương thích khác. Nếu app không dùng cấu trúc JSON mẫu, dùng cùng giá trị `command` và `args` theo tài liệu của app.
+Trong **Kết nối MCP → Hồ sơ app và model**, chọn hồ sơ có sẵn hoặc thêm hồ sơ với mã riêng. Có mẫu cho Codex, Antigravity, [Claude Desktop](https://py.sdk.modelcontextprotocol.io/get-started/real-host/), [Cursor](https://docs.cursor.com/context/model-context-protocol), [VS Code](https://code.visualstudio.com/docs/agents/reference/mcp-configuration), [Gemini CLI](https://geminicli.com/docs/tools/mcp-server/) và [OpenCode 2](https://opencode.ai/docs/mcp-servers/). Chọn **App MCP STDIO khác** nếu muốn dùng app tương thích khác. Nếu app không dùng cấu trúc JSON mẫu, dùng cùng giá trị `command` và `args` theo tài liệu của app.
 
-Model do app chủ chọn và chạy. Tên model trong hồ sơ để theo dõi; app điều phối không đổi model từ xa hay yêu cầu API key. Các hồ sơ ngoài hai bridge tích hợp nhận việc khi gọi MCP; chưa có đánh thức native cho chúng.
+Model do app chủ chọn và chạy. Tên model trong hồ sơ để theo dõi; app điều phối không đổi model từ xa hay yêu cầu API key. Các app chưa có adapter nhận việc khi gọi MCP.
 
 Sao chép riêng mục được tạo vào cấu hình app, nạp lại kết nối, rồi gọi `coordinator_list_tasks` trong chat thử. Nút **Kiểm tra lần gọi** cho biết hồ sơ nào đã thực sự gọi công cụ. Để quay lui, bỏ riêng mục được hiển thị trong hướng dẫn và tắt đánh thức nếu đã bật; giữ nguyên các cấu hình khác. Các mẫu cấu hình app mới đã được đối chiếu tài liệu và phần STDIO đã thử bằng một client thứ ba, chưa chạy nghiệm thu trong từng app desktop.
 
@@ -36,7 +36,14 @@ Sao chép riêng mục được tạo vào cấu hình app, nạp lại kết n�
 
 Tab **Kết nối MCP** cho biết lần gọi công cụ cuối, bridge có tìm được tệp chạy hay không, chat đích đã bật chưa, số việc chờ chuyển và số lời nhắc cần kiểm tra thủ công. “Lần gọi cuối” không chứng minh agent đang online; tìm được tệp bridge không chứng minh app sẽ chấp nhận lời nhắc. **Tải chẩn đoán** xuất báo cáo với trạng thái và số đếm; không chứa thư mục cá nhân, chat UUID, tên/model hồ sơ tùy chỉnh, nội dung tin hoặc token.
 
-## Đánh thức chat đã chọn (tùy chọn trên Windows)
+## Review, hồ sơ và dự án
+
+1. Tạo việc bằng mẫu triển khai, kiểm thử hoặc nghiên cứu. Trong chi tiết công việc, thêm người review và tiêu chí nghiệm thu.
+2. Người làm gửi review; reviewer yêu cầu sửa hoặc chuyển sang chủ dự án duyệt. Hai bên có thể dùng `coordinator_review_task` hoặc chủ dự án có thể ghi lại bước tương ứng trên dashboard. Chỉ chủ dự án nghiệm thu cuối trên dashboard. App ghi lịch sử và chuyển thông báo cho đúng bên; không merge, deploy hoặc cấp quyền thay cho người dùng.
+3. Tạm ngưng hồ sơ để ngừng nhận việc/tin riêng mới, dừng ghi qua MCP và hủy wake còn chờ. Hồ sơ vẫn đọc được lịch sử. Chuyển việc đang mở và đổi người review trước khi lưu trữ. Kích hoạt lại không tự bật wake.
+4. Dùng **Không gian dự án → Thêm dự án** để tạo kho riêng có bảng việc, hồ sơ, inbox, biên nhận và chat đích riêng. Lấy lại snippet trong đúng dự án; tên máy chủ và `--data-dir` khác giữa các dự án. Giữ mỗi chat cho một hồ sơ và một dự án. `npm run doctor -- --workspace <mã>` đọc chẩn đoán dự án từ dashboard đang chạy.
+
+## Đánh thức Codex và Antigravity (tùy chọn trên Windows)
 
 Dashboard và hai kết nối MCP có thể dùng độc lập với worker. Nếu muốn đánh thức chat, người dùng chủ động cài sidecar và bật từng chat UUID trên dashboard:
 
@@ -54,6 +61,14 @@ Lần đầu dùng thật, hãy thêm mục MCP mới và cho mỗi bên gọi `
 
 Tab **Lời nhắc** lọc và phân trang theo agent/trạng thái, hiển thị giờ chuyển/ACK, việc chờ trên hai phút và liên kết tới công việc hoặc tin tạo yêu cầu. Chỉ lời nhắc chưa chuyển mới hủy được. Với lời nhắc lỗi hoặc chưa rõ kết quả, kiểm tra chat trước khi dùng **Đã kiểm chat · Gửi lại**. Gửi lại tạo mục mới có tham chiếu cũ; ACK đến muộn sẽ hủy lượt gửi lại còn chờ.
 
+## Đánh thức OpenCode 2 local (tùy chọn)
+
+1. Tạo hồ sơ **OpenCode 2** trong dự án cần dùng và cài cấu hình MCP của hồ sơ đó. Dùng một [OpenCode 2 server](https://opencode.ai/docs/cli/web) chạy tại `127.0.0.1`, ví dụ `opencode serve --hostname 127.0.0.1 --port 4096`. Kết nối tới server đó và chọn một session thử đã có.
+2. Thêm mục `"opencode": { "url": "http://127.0.0.1:4096" }` vào `wake-config.json` của **kho gốc**, cùng cấp với các mục khác. Cung cấp cùng mật khẩu server OpenCode trong biến `COORDINATOR_OPENCODE_PASSWORD` của tiến trình worker. Không lưu mật khẩu trong JSON, SQLite, báo cáo hay Git.
+3. Chạy worker từ kho gốc bằng `npm run worker` (hoặc cho sidecar đang dùng nhận cùng biến môi trường). Worker đọc hàng đợi từng dự án. Trên dashboard, bật session ID của hồ sơ đó và gửi lời nhắc thử. [API OpenCode 2](https://opencode.ai/docs/api) chỉ xác nhận đã xếp lời nhắc vào session; đợi `coordinator_ack_wake` từ đúng MCP mới coi là đã nhận. Không áp cấu hình này cho OpenCode 1.x.
+
+Adapter chỉ kết nối trực tiếp đến IPv4 loopback, không theo chuyển hướng. Khi phát hiện cùng chat được gắn nhiều nơi, worker giữ các yêu cầu đó trong hàng đợi. Đã kiểm API bằng server mô phỏng và ACK thật qua STDIO; chưa gửi thử tới ứng dụng OpenCode thật trong lần phát triển này.
+
 ## Sao lưu và phục hồi
 
 ```sh
@@ -63,15 +78,15 @@ npm run restore -- "coordinator-backup.sqlite" "coordinator-restore"
 
 Có thể sao lưu khi dashboard và MCP vẫn dùng kho nguồn. App dùng SQLite Online Backup API để tạo ảnh nhất quán và kiểm tính toàn vẹn trước khi hoàn tất. Tệp đích chưa được tồn tại. Kho phục hồi phải là thư mục mới; lần đầu mở nó, đặt `COORDINATOR_DATA_DIR` thành đường dẫn tuyệt đối tới đó và, nếu vẫn chạy kho nguồn, đặt `COORDINATOR_PORT` khác.
 
-Phục hồi giữ nhiệm vụ, tin, hồ sơ, lịch sử và biên nhận; tắt toàn bộ chat đích và hủy lời nhắc chưa chuyển trong bản phục hồi. Lượt đang chuyển được ghi là chưa rõ kết quả. Không phục hồi cấu hình bridge hoặc đường dẫn đến app. Tệp SQLite chứa nội dung làm việc: giữ ngoài Git.
+Phục hồi giữ nhiệm vụ, tin, hồ sơ, lịch sử và biên nhận; tắt toàn bộ chat đích và hủy lời nhắc chưa chuyển trong bản phục hồi. Lượt đang chuyển được ghi là chưa rõ kết quả. Không phục hồi cấu hình bridge hoặc đường dẫn đến app. Sao lưu theo **từng kho dự án**, bằng đường dẫn hiện trong dashboard; bản sao kho gốc không chứa SQLite của các dự án con. Tệp SQLite chứa nội dung làm việc: giữ ngoài Git.
 
-Bản P1 tự nâng schema cũ từ v1 lên v2 khi mở kho. Nếu cần khả năng quay về mã trước P1, giữ bản sao v1 trước khi mở kho bằng bản này; bản cũ không mở được schema v2.
+Bản mới tự nâng schema v1/v2 lên v3 khi mở kho. Sao lưu từng kho bằng bản hiện đang chạy trước khi cập nhật nếu cần quay lại; mã cũ không mở được schema v3.
 
 ## Kiến trúc và kiểm thử
 
 - `server.mjs`: dashboard HTTP trên loopback, kiểm Host, Origin và token phiên khi ghi.
 - `store.mjs`: giao dịch SQLite, revision để phát hiện sửa đồng thời, request ID để thử lại không nhân đôi, ACK theo danh tính và hàng đợi wake.
-- `mcp.mjs`: 8 công cụ STDIO, danh tính gắn với tiến trình. `wake-worker.mjs`: claim, phân lô và ghi kết quả chuyển lời nhắc; không chạy lệnh nhận từ tin nhắn.
+- `mcp.mjs`: 9 công cụ STDIO, danh tính gắn với tiến trình. `wake-worker.mjs`: xử lý từng kho, phân lô và ghi kết quả chuyển lời nhắc; không chạy lệnh nhận từ tin nhắn.
 - `demo.mjs`: kịch bản với SQLite tạm, bridge giả lập và hai client MCP thật. Cổng tự chọn, độc lập với dashboard thường.
 
 Chạy `npm test`. Bộ test kiểm quyền đọc/ghi, xung đột revision, gửi lại, rollback, claim đồng thời, biên nhận của hai client và luồng demo. Bản import lấy mã đã theo dõi tại [`0caa3832`](https://github.com/whaticando0110/Reverend-insanity-discord-game/tree/0caa3832/apps/agent-coordinator). [PR gốc #8](https://github.com/whaticando0110/Reverend-insanity-discord-game/pull/8) ghi nghiệm thu chat thật của bản gốc; bản độc lập chưa đổi các kết nối đó.

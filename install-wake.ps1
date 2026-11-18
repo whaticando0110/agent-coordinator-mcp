@@ -42,9 +42,19 @@ if (-not $settings.ContainsKey('sidecars')) { $settings.sidecars = @{} }
 if ($settings.sidecars -isnot [hashtable]) { throw 'Existing sidecars configuration must be an object.' }
 New-Item -ItemType Directory -Force -Path $sidecarRoot, $DataDirectory | Out-Null
 $files = @($configFile, (Join-Path $sidecarRoot 'sidecar.json'), (Join-Path $DataDirectory 'wake-config.json'))
+$bridgeFile = $files[2]
+$bridge = @{}
+if (Test-Path -LiteralPath $bridgeFile) {
+    $bridge = ConvertTo-Hashtable (Get-Content -LiteralPath $bridgeFile -Raw | ConvertFrom-Json)
+    if ($bridge -isnot [hashtable]) { throw 'Existing wake-config.json must be an object.' }
+}
 foreach ($file in $files) { if (Test-Path -LiteralPath $file) { Copy-Item -LiteralPath $file -Destination "$file.before-wake-$stamp.bak" } }
-$bridge = @{ codex = @{ executable = $CodexExecutable }; antigravity = @{ executable = $AntigravityExecutable } }
-[IO.File]::WriteAllText((Join-Path $DataDirectory 'wake-config.json'), ($bridge | ConvertTo-Json -Depth 20), $utf8)
+foreach ($actor in @('codex','antigravity')) {
+    if ($bridge[$actor] -isnot [hashtable]) { $bridge[$actor] = @{} }
+}
+$bridge.codex.executable = $CodexExecutable
+$bridge.antigravity.executable = $AntigravityExecutable
+[IO.File]::WriteAllText($bridgeFile, ($bridge | ConvertTo-Json -Depth 20), $utf8)
 $sidecar = @{ command = $nodePath; args = @($workerPath, '--data-dir', $DataDirectory); restart_policy = 'on-failure'; display_name = 'Agent Coordinator MCP'; description = 'Deliver coordinator wake requests to existing Codex and Antigravity chats.' }
 [IO.File]::WriteAllText((Join-Path $sidecarRoot 'sidecar.json'), ($sidecar | ConvertTo-Json -Depth 20), $utf8)
 if (-not $settings.sidecars.ContainsKey('agent-coordinator-standalone')) { $settings.sidecars['agent-coordinator-standalone'] = @{} }

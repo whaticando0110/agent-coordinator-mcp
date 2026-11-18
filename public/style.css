@@ -68,6 +68,12 @@ p { line-height: 1.7; }
 .queue-row { padding: 15px 0; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
 .queue-row p { margin: 5px 0; }
 .queue-row button { white-space: normal; }
+.workspace-controls { margin-bottom: 24px; }
+.workspace-controls > label { margin-top: 0; }
+.workspace-controls > details { margin-top: 10px; }
+.workflow { padding-top: 18px; margin-top: 18px; border-top: 1px solid var(--border); }
+.workflow-criteria { white-space: pre-wrap; overflow-wrap: anywhere; }
+.workflow > details { margin-top: 12px; }
 .summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 22px; }
 .stat { border: 1px solid var(--border); background: white; border-radius: 10px; padding: 18px 19px; }
 .stat .stat-label { font-size: 11px; color: var(--muted); }

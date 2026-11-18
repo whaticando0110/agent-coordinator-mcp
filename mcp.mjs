@@ -39,6 +39,10 @@ export function coordinatorMcp(store, actor) {
     taskId: z.string().uuid(), revision: z.number().int().positive(), status: z.enum(statuses).optional(),
     progress: z.number().int().min(0).max(100).optional(), note: z.string().max(4000).optional(), link: z.string().max(2048).optional()
   }, ({ taskId, ...input }) => ({ task: store.updateTask(actor, taskId, input) }));
+  tool('coordinator_review_task', 'Chủ việc dùng submit; người review dùng changes hoặc recommend. Chỉ người dùng có thể nghiệm thu cuối.', {
+    taskId: z.string().uuid(), revision: z.number().int().positive(), action: z.enum(['submit','changes','recommend']),
+    note: z.string().max(3500).optional()
+  }, ({ taskId, ...input }) => store.advanceReview(actor, taskId, input));
   tool('coordinator_inbox', 'Đọc hộp thư chung và tin gửi cho bạn. Việc đọc giữ nguyên trạng thái chưa đọc cho đến khi bạn xác nhận.', {
     taskId: z.string().uuid().optional(), before: z.number().int().positive().optional(), limit: z.number().int().min(1).max(200).optional()
   }, input => ({ actor, messages: store.messages(actor, input) }), true);

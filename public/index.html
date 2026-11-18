@@ -34,6 +34,16 @@
       <div class="breadcrumb">Trạm phối hợp <span>/</span> Không gian phát triển</div>
       <span class="local-badge">● LOCAL</span>
     </header>
+    <section id="workspace-controls" class="panel workspace-controls" hidden>
+      <label>Không gian dự án<select id="workspace-select"></select></label>
+      <details><summary>Thêm dự án</summary>
+        <form id="workspace-form">
+          <div class="form-row"><label>Mã dự án<input name="id" maxlength="24" required placeholder="vi-du-web-demo"></label>
+            <label>Tên dự án<input name="name" maxlength="70" required placeholder="Web demo"></label></div>
+          <button class="primary" type="submit">Tạo không gian</button>
+        </form>
+      </details>
+    </section>
     <section class="page-heading">
       <div><div class="eyebrow">AGENT COORDINATOR MCP</div>
         <h1 id="view-title">Cùng làm, rõ từng việc.</h1>
@@ -111,12 +121,17 @@
             <label>Tên hiển thị<input name="name" maxlength="60" required placeholder="Ví dụ: Agent review"></label>
           </div>
           <div class="form-row">
-            <label>Ứng dụng<select name="app"><option value="codex">Codex</option><option value="antigravity">Antigravity</option><option value="claude-desktop">Claude Desktop</option><option value="cursor">Cursor</option><option value="vscode">VS Code</option><option value="gemini-cli">Gemini CLI</option><option value="stdio">App MCP STDIO khác</option></select></label>
+            <label>Ứng dụng<select name="app"><option value="codex">Codex</option><option value="antigravity">Antigravity</option><option value="claude-desktop">Claude Desktop</option><option value="cursor">Cursor</option><option value="vscode">VS Code</option><option value="gemini-cli">Gemini CLI</option><option value="opencode">OpenCode 2</option><option value="stdio">App MCP STDIO khác</option></select></label>
             <label id="profile-app-label">Tên app khác<input name="appLabel" maxlength="60" placeholder="Ví dụ: app hoặc CLI bạn đang dùng"></label>
             <label>Model<input name="model" maxlength="100" list="known-models" placeholder="Nhập hoặc chọn tên model đã lưu"><datalist id="known-models"></datalist></label>
           </div>
           <button class="primary" type="submit">Lưu hồ sơ</button>
         </form>
+        <div id="profile-life" class="setup-actions" hidden>
+          <p id="profile-life-status" class="hint"></p>
+          <button class="secondary" id="profile-toggle" type="button"></button>
+          <button class="secondary" id="profile-archive" type="button">Lưu trữ</button>
+        </div>
         <div id="profile-guide" hidden>
           <h3>Kết nối hồ sơ đã lưu</h3>
           <ol>
@@ -129,7 +144,8 @@
           <p id="profile-seen" role="status" class="hint"></p>
           <details><summary>Quay lại cấu hình cũ</summary><p id="profile-rollback"></p></details>
         </div>
-        <details><summary>Sao lưu và phục hồi</summary><p>Chạy trong thư mục app. Kho đích phải là thư mục chưa tồn tại; đánh thức mặc định tắt sau khi phục hồi.</p>
+        <details><summary>Sao lưu và phục hồi</summary><p>Chạy trong thư mục app; đặt COORDINATOR_DATA_DIR thành đường dẫn tuyệt đối của kho cần sao lưu. Kho đích chưa được tồn tại, đánh thức mặc định tắt sau khi phục hồi.</p>
+          <p id="backup-workspace-path" class="hint"></p>
           <pre>npm run backup -- "coordinator-backup.sqlite"
 npm run restore -- "coordinator-backup.sqlite" "coordinator-restore"</pre>
         </details>
@@ -137,7 +153,7 @@ npm run restore -- "coordinator-backup.sqlite" "coordinator-restore"</pre>
       <section class="panel">
         <h2>Đánh thức chat</h2>
         <p id="wake-worker-status" class="hint"></p>
-        <p id="wake-setup">Đánh thức tự động hỗ trợ hai hồ sơ tích hợp Codex và Antigravity. Các hồ sơ khác đọc việc, gửi tin và cập nhật tiến độ khi gọi MCP.</p>
+        <p id="wake-setup">Có adapter cho Codex, Antigravity và OpenCode 2 local. Dùng một chat riêng cho mỗi không gian để ACK đúng kho.</p>
         <p class="hint">Cần worker đang chạy. “Đã chuyển” chỉ xác nhận bridge nhận lệnh; “Chat đã nhận” cần agent xác nhận qua MCP.</p>
         <div id="wake-readiness" class="wake-readiness"></div>
         <div id="wake-targets"></div>
@@ -150,6 +166,7 @@ npm run restore -- "coordinator-backup.sqlite" "coordinator-restore"</pre>
       <div class="panel-heading"><div><div class="eyebrow">MỘT VIỆC MỚI</div><h2>Giao công việc</h2></div><button class="icon-button" type="button" id="close-dialog" aria-label="Đóng">×</button></div>
       <label>Bên phụ trách<select name="owner"><option value="codex">Codex</option><option value="antigravity">Antigravity</option></select></label>
       <label>Tiêu đề<input name="title" maxlength="180" required placeholder="Ví dụ: review thay đổi giao diện"></label>
+      <label>Mẫu giao việc<select id="task-template"><option value="">Tự viết</option><option value="implementation">Triển khai tính năng</option><option value="review">Review và kiểm thử</option><option value="research">Nghiên cứu / đề xuất</option></select></label>
       <label>Yêu cầu và tiêu chí hoàn thành<textarea name="details" rows="6" maxlength="12000" placeholder="Kết quả cần đạt, phạm vi thay đổi, link Issue hoặc PR liên quan…"></textarea></label>
       <p class="hint">Việc được lưu vào bảng và gửi tới hộp thư của bên phụ trách.</p>
       <button class="primary" type="submit">Giao việc ↗</button>

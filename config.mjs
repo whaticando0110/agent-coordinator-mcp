@@ -7,7 +7,7 @@ export const appDirectory = path.dirname(fileURLToPath(import.meta.url));
 export const actors = ['user', 'codex', 'antigravity'];
 export const agents = ['codex', 'antigravity'];
 export const agentIdPattern = /^[a-z][a-z0-9_-]{0,31}$/;
-export const agentApps = ['codex', 'antigravity', 'claude-desktop', 'cursor', 'vscode', 'gemini-cli', 'stdio'];
+export const agentApps = ['codex', 'antigravity', 'claude-desktop', 'cursor', 'vscode', 'gemini-cli', 'opencode', 'stdio'];
 const appSettings = {
   codex: 'Cài đặt MCP trong Codex hoặc config.toml',
   antigravity: 'Cài đặt MCP trong Antigravity',
@@ -15,6 +15,7 @@ const appSettings = {
   cursor: 'mcp.json của Cursor',
   vscode: 'mcp.json do trình soạn thảo VS Code quản lý',
   'gemini-cli': 'settings.json của Gemini CLI',
+  opencode: 'opencode.jsonc của OpenCode 2',
   stdio: 'Mục cấu hình máy chủ MCP STDIO của app'
 };
 export const statuses = ['queued', 'in_progress', 'blocked', 'review', 'done'];
@@ -50,11 +51,25 @@ export function connectionConfig(directory) {
   };
 }
 
-export function profileConnection(directory, profile) {
-  const key = agents.includes(profile.id) ? 'agent_coordinator_standalone' : `agent_coordinator_profile_${profile.id}`;
+export function serverKey(id, workspace = 'local') {
+  if (workspace !== 'local') return `coord_${workspace}_${id}`;
+  return agents.includes(id) ? 'agent_coordinator_standalone' : `agent_coordinator_profile_${id}`;
+}
+
+export function workspaceDirectory(root, id) {
+  if (id === 'local') return root;
+  if (!/^[a-z][a-z0-9-]{0,23}$/.test(id) || /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$/.test(id))
+    throw new Error('Mã dự án không hợp lệ.');
+  return path.join(root, 'workspaces', id);
+}
+
+export function profileConnection(directory, profile, workspace = 'local') {
+  const key = serverKey(profile.id, workspace);
   const command = process.execPath;
   const args = [path.join(appDirectory, 'mcp.mjs'), '--agent', profile.id, '--data-dir', directory];
-  const json = profile.app === 'vscode' ? { servers: { [key]: { type: 'stdio', command, args } } } : { mcpServers: { [key]: { command, args } } };
+  const json = profile.app === 'vscode' ? { servers: { [key]: { type: 'stdio', command, args } } } :
+    profile.app === 'opencode' ? { mcp: { servers: { [key]: { type: 'local', command: [command, ...args] } } } } :
+    { mcpServers: { [key]: { command, args } } };
   return { key, command, args, format: profile.app === 'codex' ? 'TOML' : 'JSON', settings: appSettings[profile.app],
     snippet: profile.app === 'codex' ? `[mcp_servers.${key}]\ncommand = ${JSON.stringify(command)}\nargs = ${JSON.stringify(args)}\n` :
       JSON.stringify(json, null, 2) };

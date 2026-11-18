@@ -3,7 +3,8 @@ import { readFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { agents, appDirectory, appName, connectionConfig, coordinatorPort, dataDirectory, defaultPort, profileConnection, workspaceKey } from './config.mjs';
+import { agents, appDirectory, appName, connectionConfig, coordinatorPort, dataDirectory, defaultPort, profileConnection,
+  workspaceDirectory, workspaceKey } from './config.mjs';
 import { AppError, openStore } from './store.mjs';
 import { readWakeBridges } from './wake-bridges.mjs';
 
@@ -29,17 +30,25 @@ async function readBody(request) {
   return body;
 }
 
-export function createCoordinatorServer({ directory = dataDirectory(), port = defaultPort, demoSetup } = {}) {
-  const store = openStore(directory), token = randomBytes(32).toString('hex');
-  const demo = demoSetup?.(store);
-  const workspace = workspaceKey(directory);
-  async function readiness() {
-    const { statuses } = await readWakeBridges(directory);
+export function createCoordinatorServer({ directory: root = dataDirectory(), port = defaultPort, demoSetup } = {}) {
+  const rootStore = openStore(root), token = randomBytes(32).toString('hex');
+  const stores = new Map([['local', rootStore]]);
+  const demo = demoSetup?.(rootStore);
+  const workspace = workspaceKey(root);
+  const workspaces = () => [{ id: 'local', name: 'Không gian mặc định' }, ...rootStore.workspaces()];
+  function space(id) {
+    const directory = workspaceDirectory(root, id);
+    if (!stores.has(id)) stores.set(id, openStore(directory));
+    return { store: stores.get(id), directory };
+  }
+  async function readiness(store) {
+    const bridges = store.wakeProfiles();
+    const { statuses } = await readWakeBridges(root, bridges);
     const targets = store.wakeState().targets, presence = store.lastSeen(), counts = store.wakeCounts();
     const workerLastSeen = presence.wake_worker ?? null;
     return { workerLastSeen, workerOnline: workerLastSeen !== null && Date.now() - workerLastSeen < 15000,
-      agents: agents.map(actor => ({ actor, lastMcpAt: presence[actor] ?? null, bridge: statuses[actor],
-        targetEnabled: Boolean(targets.find(target => target.actor === actor)?.enabled), ...counts[actor] })) };
+      agents: bridges.map(profile => ({ actor: profile.id, lastMcpAt: presence[profile.id] ?? null, bridge: statuses[profile.id],
+        targetEnabled: Boolean(targets.find(target => target.actor === profile.id)?.enabled), ...counts[profile.id] })) };
   }
   const send = (response, code, data) => { response.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' }); response.end(JSON.stringify(data)); };
   const server = http.createServer(async (request, response) => {
@@ -61,14 +70,18 @@ export function createCoordinatorServer({ directory = dataDirectory(), port = de
       }
       if (request.method === 'GET' && url.pathname === '/api/health') return send(response, 200, { app: appName,
         version: '0.1.0', mode: demo ? 'demo' : 'live', workspace: demo ? null : workspace });
+      const workId = request.headers['x-coordinator-workspace'] || 'local';
+      if ((demo && workId !== 'local') || !workspaces().some(item => item.id === workId))
+        throw new AppError(404, 'workspace_missing', 'Không tìm thấy không gian dự án.');
+      const { store, directory } = space(workId);
       if (request.method === 'GET' && url.pathname === '/api/readiness' && !demo)
-        return send(response, 200, await readiness());
+        return send(response, 200, await readiness(store));
       if (request.method === 'GET' && url.pathname === '/api/support' && !demo) {
-        const report = await readiness();
+        const report = await readiness(store);
         return send(response, 200, { app: appName, node: process.versions.node, platform: process.platform,
           workerOnline: report.workerOnline, registeredAgents: store.profiles().length,
           wake: report.agents.map(({ actor, bridge, lastMcpAt, targetEnabled, queued, uncertain }) => ({
-            adapter: actor, bridge, mcpSeen: lastMcpAt !== null, targetEnabled, queued, uncertain
+            adapter: agents.includes(actor) ? actor : 'opencode', bridge, mcpSeen: lastMcpAt !== null, targetEnabled, queued, uncertain
           })) });
       }
       if (request.method === 'GET' && url.pathname === '/api/wake/jobs' && !demo)
@@ -77,10 +90,11 @@ export function createCoordinatorServer({ directory = dataDirectory(), port = de
           before: url.searchParams.has('before') ? Number(url.searchParams.get('before')) : undefined }));
       const profileRoute = /^\/api\/agents\/([a-z][a-z0-9_-]{0,31})$/.exec(url.pathname);
       if (request.method === 'GET' && profileRoute && !demo)
-        return send(response, 200, profileConnection(directory, store.profile(profileRoute[1])));
+        return send(response, 200, profileConnection(directory, store.profile(profileRoute[1]), workId));
       if (request.method === 'GET' && url.pathname === '/api/state') return send(response, 200, { ...store.board(), token,
         dataDirectory: demo ? null : directory, connection: demo ? null : connectionConfig(directory), wake: store.wakeState(),
-        demo: demo?.snapshot() ?? null, readiness: demo ? null : await readiness() });
+        demo: demo?.snapshot() ?? null, readiness: demo ? null : await readiness(store),
+        workspace: workId, workspaces: demo ? [] : workspaces() });
       if (request.method === 'GET' && url.pathname === '/api/messages') {
         const before = url.searchParams.get('before');
         return send(response, 200, { messages: store.messages('user', { taskId: url.searchParams.get('taskId') || undefined,
@@ -97,6 +111,11 @@ export function createCoordinatorServer({ directory = dataDirectory(), port = de
       }
       if (request.method === 'POST' && url.pathname === '/api/agents')
         return send(response, 201, store.saveProfile(body.id, body, { create: true }));
+      if (request.method === 'POST' && url.pathname === '/api/workspaces')
+        return send(response, 201, rootStore.registerWorkspace(body.id, body.name));
+      const profileState = /^\/api\/agents\/([a-z][a-z0-9_-]{0,31})\/state$/.exec(url.pathname);
+      if (request.method === 'PATCH' && profileState)
+        return send(response, 200, store.setProfileState(profileState[1], body.state));
       if (request.method === 'PATCH' && profileRoute)
         return send(response, 200, store.saveProfile(profileRoute[1], body));
       const wakeJob = /^\/api\/wake\/jobs\/([1-9][0-9]*)\/(cancel|retry)$/.exec(url.pathname);
@@ -106,8 +125,27 @@ export function createCoordinatorServer({ directory = dataDirectory(), port = de
         if (wakeJob[2] === 'cancel') return send(response, 200, store.cancelWake(id));
         return send(response, 202, store.retryWake(id, body.reviewed));
       }
-      const wakeTarget = /^\/api\/wake\/(codex|antigravity)$/.exec(url.pathname);
-      if (request.method === 'PATCH' && wakeTarget) return send(response, 200, store.setWakeTarget(wakeTarget[1], body));
+      const lifecycle = /^\/api\/tasks\/([a-f0-9-]{36})\/(transfer|review|review-action)$/.exec(url.pathname);
+      if (request.method === 'POST' && lifecycle) {
+        const [, id, action] = lifecycle;
+        if (action === 'transfer') return send(response, 200, store.transferTask(id, body));
+        if (action === 'review') return send(response, 200, store.configureReview(id, body));
+        return send(response, 200, store.advanceReview('user', id, body));
+      }
+      const wakeTarget = /^\/api\/wake\/([a-z][a-z0-9_-]{0,31})$/.exec(url.pathname);
+      if (request.method === 'PATCH' && wakeTarget) {
+        const checked = store.wakeProfiles().find(item => item.id === wakeTarget[1]);
+        if (!checked) throw new AppError(404, 'wake_adapter', 'Hồ sơ này chưa có adapter đánh thức.');
+        if (body.enabled === true) {
+          for (const entry of workspaces()) {
+            const other = space(entry.id).store;
+            const repeated = other.wakeState().targets.some(target => target.enabled && (entry.id !== workId || target.actor !== wakeTarget[1])
+              && target.conversation_id.toLowerCase() === String(body.conversationId).toLowerCase());
+            if (repeated) throw new AppError(409, 'duplicate_chat', 'Chat đang dành cho hồ sơ hoặc không gian khác.');
+          }
+        }
+        return send(response, 200, store.setWakeTarget(wakeTarget[1], body));
+      }
       if (request.method === 'POST' && wakeTarget) return send(response, 202, store.requestWake(wakeTarget[1]));
       if (request.method === 'POST' && url.pathname === '/api/tasks') return send(response, 201, { task: store.createTask('user', body) });
       if (request.method === 'PATCH' && detail) return send(response, 200, { task: store.updateTask('user', detail[1], body) });
@@ -120,9 +158,9 @@ export function createCoordinatorServer({ directory = dataDirectory(), port = de
       else response.destroy();
     }
   });
-  server.on('close', () => store.close());
+  server.on('close', () => { for (const store of stores.values()) store.close(); });
   server.requestTimeout = 15000;
-  return { server, store, listen: () => new Promise((resolve, reject) => {
+  return { server, store: rootStore, listen: () => new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, '127.0.0.1', () => resolve(server.address()));
   }) };

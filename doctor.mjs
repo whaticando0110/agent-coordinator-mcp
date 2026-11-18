@@ -9,7 +9,7 @@ export function launchSettings(directory = dataDirectory(), port = coordinatorPo
   return { address: `http://127.0.0.1:${port}`, directory, workspace: workspaceKey(directory) };
 }
 
-export async function inspect({ directory = dataDirectory(), port = coordinatorPort() } = {}) {
+export async function inspect({ directory = dataDirectory(), port = coordinatorPort(), project = 'local' } = {}) {
   const { address, workspace } = launchSettings(directory, port);
   const major = Number(process.versions.node.split('.')[0]);
   let dependencies = true;
@@ -21,7 +21,8 @@ export async function inspect({ directory = dataDirectory(), port = coordinatorP
   catch (error) { if (error.code !== 'ENOENT') database = 'unreadable'; }
   const { statuses: bridges } = await readWakeBridges(directory);
   let dashboard, readiness = null;
-  const get = route => fetch(address + route, { redirect: 'error', signal: AbortSignal.timeout(1800) });
+  const get = route => fetch(address + route, { redirect: 'error', signal: AbortSignal.timeout(1800),
+    headers: { 'X-Coordinator-Workspace': project } });
   try {
     const response = await get('/api/health');
     const health = response.ok ? await response.json().catch(() => null) : null;
@@ -34,23 +35,25 @@ export async function inspect({ directory = dataDirectory(), port = coordinatorP
       else dashboard = 'readiness_unavailable';
     }
   } catch (error) { dashboard = error.cause?.code === 'ECONNREFUSED' ? 'not_running' : 'unreachable'; }
-  return { node: process.versions.node, nodeSupported: major >= 24, dependencies, directory, database, address, dashboard, bridges, readiness };
+  if (readiness) for (const { actor, bridge } of readiness.agents) bridges[actor] = bridge;
+  return { node: process.versions.node, nodeSupported: major >= 24, dependencies, directory, database, address, dashboard, bridges, readiness, project };
 }
 
 const bridgeLabels = {
   configured: 'đường dẫn bridge hợp lệ; chưa thử gửi thật', not_configured: 'chưa cấu hình bridge',
   config_unreadable: 'không đọc được cấu hình bridge', invalid_config: 'tệp cấu hình bridge không hợp lệ',
-  invalid_executable: 'đường dẫn tệp chạy bridge không hợp lệ', unavailable_executable: 'không mở được tệp chạy bridge'
+  invalid_executable: 'đường dẫn tệp chạy bridge không hợp lệ', unavailable_executable: 'không mở được tệp chạy bridge',
+  missing_password: 'thiếu mật khẩu OpenCode trong môi trường'
 };
 
 async function main() {
-  const { values } = parseArgs({ options: { json: { type: 'boolean' }, 'launch-config': { type: 'boolean' } } });
+  const { values } = parseArgs({ options: { json: { type: 'boolean' }, 'launch-config': { type: 'boolean' }, workspace: { type: 'string' } } });
   if (values['launch-config']) {
     // Windows PowerShell 5 can decode native stdout using a non-UTF8 code page.
     console.log(JSON.stringify(launchSettings()).replace(/[^\x00-\x7f]/g, unit => '\\u' + unit.charCodeAt(0).toString(16).padStart(4, '0')));
     return;
   }
-  const info = await inspect();
+  const info = await inspect({ project: values.workspace });
   if (values.json) console.log(JSON.stringify(info, null, 2));
   else {
     console.log(`Node ${info.node} · ${info.dependencies ? 'đủ thư viện' : 'thiếu thư viện; chạy npm ci --ignore-scripts'}`);
@@ -61,7 +64,8 @@ async function main() {
       unreachable: 'không kiểm tra được phản hồi', readiness_unavailable: 'đang chạy nhưng lỗi đọc trạng thái'
     }[info.dashboard]}`);
     console.log(`Worker: ${info.readiness?.workerOnline ? 'có heartbeat gần đây' : 'chưa thấy heartbeat'} (tùy chọn)`);
-    for (const actor of ['codex', 'antigravity']) {
+    if (info.project !== 'local') console.log(`Trạng thái kết nối của dự án: ${info.project}`);
+    for (const actor of Object.keys(info.bridges)) {
       const row = info.readiness?.agents.find(row => row.actor === actor);
       const mcp = row?.lastMcpAt ? 'lần gọi MCP cuối: ' + new Date(row.lastMcpAt).toISOString() : 'chưa thấy gọi MCP';
       const pending = row ? ` · ${row.targetEnabled ? 'đã bật chat đích' : 'chưa bật chat đích'} · ${row.queued} chờ · ${row.uncertain} chưa rõ kết quả` : '';

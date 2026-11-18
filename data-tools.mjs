@@ -17,7 +17,7 @@ function verify(db) {
   const version = db.prepare('PRAGMA user_version').get().user_version;
   const names = db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all().map(row => row.name);
   const required = ['tasks','messages','receipts','events','wake_targets','wake_jobs','presence'];
-  if (![1, 2].includes(version) || required.some(name => !names.includes(name)) || (version === 2 && !names.includes('agent_profiles')))
+  if (![1, 2, 3].includes(version) || required.some(name => !names.includes(name)) || (version >= 2 && !names.includes('agent_profiles')))
     throw new Error('Tệp không phải kho SQLite của Agent Coordinator.');
   const unexpected = db.prepare("SELECT name FROM sqlite_schema WHERE type='view' OR (type='trigger' AND name<>'coordinator_wake_message')").get();
   if (unexpected) throw new Error('Kho SQLite có đối tượng không thuộc cấu trúc hỗ trợ.');
@@ -71,6 +71,7 @@ export async function restoreBackup(source, directory) {
         UPDATE wake_jobs SET state='unknown',error='Lượt gửi dở ở thời điểm sao lưu; kiểm tra chat' WHERE state='sending';
         DELETE FROM presence;
         COMMIT;`);
+      if (db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='workspaces'").get()) db.exec('DELETE FROM workspaces;');
       verify(db);
     } finally { db.close(); }
     // Reinstall the canonical trigger and upgrade an older snapshot in the new directory only.

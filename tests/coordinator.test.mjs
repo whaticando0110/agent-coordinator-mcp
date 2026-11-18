@@ -150,7 +150,7 @@ test('stdio also accepts the initialization protocol used by older MCP desktop c
   assert.equal(initialized.result.protocolVersion, '2025-06-18');
   child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
   const tools = await request('tools/list', {});
-  assert.equal(tools.result.tools.length, 8);
+  assert.equal(tools.result.tools.length, 9);
   const inbox = await request('tools/call', { name: 'coordinator_inbox', arguments: {} });
   assert.equal(inbox.result.isError, undefined);
   assert.equal(JSON.parse(inbox.result.content[0].text).actor, 'antigravity');
