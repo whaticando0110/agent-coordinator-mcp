@@ -60,6 +60,14 @@ p { line-height: 1.7; }
 .wake-readiness { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 10px; margin: 15px 0; }
 .wake-readiness-card { background: #f7f9fb; border: 1px solid var(--border); border-radius: 8px; padding: 12px; display: grid; gap: 7px; }
 .wake-readiness-card span { color: #566477; font-size: 11px; }
+.setup-panel { margin-bottom: 18px; }
+.setup-panel pre { margin: 12px 0; padding: 12px; background: var(--bg); white-space: pre-wrap; overflow-wrap: anywhere; }
+.setup-panel details { margin-top: 14px; }
+.setup-panel ol { padding-left: 20px; line-height: 1.7; }
+.setup-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.queue-row { padding: 15px 0; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.queue-row p { margin: 5px 0; }
+.queue-row button { white-space: normal; }
 .summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 22px; }
 .stat { border: 1px solid var(--border); background: white; border-radius: 10px; padding: 18px 19px; }
 .stat .stat-label { font-size: 11px; color: var(--muted); }
@@ -167,7 +175,8 @@ dialog form > .primary { width: 100%; margin-top: 8px; }
   .sidebar { position: static; width: 100%; height: auto; display: block; padding: 18px; border-right: 0; border-bottom: 1px solid var(--border); }
   .brand { margin-bottom: 15px; }
   .sidebar > .section-label, .sidebar-note, .sidebar footer { display: none; }
-  .sidebar nav { display: flex; gap: 6px; margin: 0; }
+  .sidebar nav { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; }
+  .sidebar nav > button { flex: 1 1 max-content; }
   .nav-button { font-size: 10px; justify-content: center; padding: 9px 5px; margin: 0; }
   .nav-button span { font-size: 16px; width: auto; }
   .nav-button b { display: none; }

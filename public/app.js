@@ -1,9 +1,25 @@
 const $ = selector => document.querySelector(selector);
 const labels = { queued: 'Chờ nhận', in_progress: 'Đang làm', blocked: 'Đang vướng', review: 'Chờ review', done: 'Hoàn tất' };
-const names = { user: 'Bạn', codex: 'Codex', antigravity: 'Antigravity', all: 'Hộp thư chung' };
+const names = Object.assign(Object.create(null), { user: 'Bạn', codex: 'Codex', antigravity: 'Antigravity', all: 'Hộp thư chung' });
 const state = { board: null, selected: null, detail: null, dirty: false, messages: new Map(), view: 'tasks' };
 let noticeTimer;
 let refreshing, demoPending = false;
+let profileVersion = 0, profileKey, profileSnippet;
+let queueVersion = 0, queueCursor = null, queueNext = null;
+const queueLabels = { queued: 'Chờ chuyển', sending: 'Đang chuyển', accepted: 'Đã chuyển · chờ ACK',
+  acknowledged: 'Đã ACK qua MCP', failed: 'Chưa gửi được', unknown: 'Chưa rõ kết quả', cancelled: 'Đã hủy' };
+const appLabels = { codex: 'Codex', antigravity: 'Antigravity', 'claude-desktop': 'Claude Desktop', cursor: 'Cursor',
+  vscode: 'VS Code', 'gemini-cli': 'Gemini CLI', stdio: 'MCP STDIO' };
+
+function choices(select, entries) {
+  const key = JSON.stringify(entries);
+  if (select.dataset.choices === key) return false;
+  const previous = select.value;
+  select.replaceChildren(...entries.map(([value, label]) => new Option(label, value)));
+  if (entries.some(([value]) => value === previous)) select.value = previous;
+  select.dataset.choices = key;
+  return true;
+}
 
 function element(tag, className, value) {
   const node = document.createElement(tag);
@@ -48,6 +64,20 @@ function progress(value) {
 
 function renderBoard() {
   const tasks = state.board.tasks;
+  const options = state.board.agents.map(agent => {
+    names[agent.actor] = agent.name;
+    return [agent.actor, agent.name];
+  });
+  choices($('#owner-filter'), [['', 'Mọi agent'], ...options]);
+  choices($('#task-form').elements.owner, options);
+  choices($('#known-models'), [...new Set(state.board.agents.map(agent => agent.model).filter(Boolean))].map(model => [model, model]));
+  choices($('#message-form').elements.recipient, [['all', names.all], ...options]);
+  choices($('#queue-actor'), [['', 'Tất cả'], ...options.filter(([id]) => ['codex', 'antigravity'].includes(id))]);
+  if (choices($('#profile-select'), [...options, ['', '＋ Thêm hồ sơ mới']]) && !state.board.demo && !profileKey) {
+    $('#profile-select').value = options[0]?.[0] ?? '';
+    fillProfile();
+  }
+  renderProfileSeen();
   $('#task-count').textContent = tasks.length;
   $('#message-count').textContent = state.board.userUnread;
   const summary = $('#summary');
@@ -70,11 +100,12 @@ function renderBoard() {
     const card = element('div', 'agent-card');
     const info = element('div');
     info.append(element('div', 'agent-name', names[agent.actor]), element('div', 'agent-subtitle',
-      agent.lastSeen ? `MCP truy cập lúc ${time(agent.lastSeen)}` : 'Chờ app truy cập MCP'));
+      agent.lastSeen ? `MCP truy cập lúc ${time(agent.lastSeen)}` : 'Chờ app truy cập MCP'),
+      element('div', 'hint', [agent.appLabel || appLabels[agent.app], agent.model].filter(Boolean).join(' · ')));
     const stats = element('div', 'agent-stats');
     stats.append(element('b', '', `${tasks.filter(task => task.owner === agent.actor && task.status !== 'done').length} việc đang mở`),
       element('small', '', `${agent.unread} tin chưa xác nhận đọc`));
-    card.append(element('span', `avatar ${agent.actor}`, agent.actor === 'codex' ? '⌘' : 'A'), info, stats);
+    card.append(element('span', `avatar ${agent.actor}`, agent.actor === 'codex' ? '⌘' : agent.name.slice(0, 1).toUpperCase()), info, stats);
     agents.append(card);
   }
   renderTasks();
@@ -190,6 +221,7 @@ function renderMessages() {
   if (!messages.length) panel.append(element('div', 'empty-state', 'Hộp thư đang trống. Gửi yêu cầu đầu tiên cho một bên hoặc cả hai.'));
   for (const message of messages) {
     const row = element('article', `message${!message.read_at && message.author !== 'user' ? ' unread' : ''}`);
+    row.id = `message-${message.id}`;
     const header = element('div', 'message-head');
     header.append(element('b', '', names[message.author]), element('span', 'muted', `→ ${names[message.recipient]}`), element('time', '', time(message.created_at)));
     row.append(header, element('p', '', message.body));
@@ -222,14 +254,11 @@ async function loadBoard() {
     $('#data-location').textContent = demo ? 'Kho tạm · chỉ dùng dữ liệu mẫu' : state.board.dataDirectory;
     $('#connection-state').textContent = 'Đã đồng bộ với kho local';
     $('#new-task').hidden = $('#compose-panel').hidden = $('#mark-read').hidden = $('#connection-setup').hidden = Boolean(demo);
+    $('#queue-nav').hidden = Boolean(demo);
     renderDemo(demo);
     renderBoard();
     renderWake();
-    if (state.board.connection) {
-      $('#codex-config').textContent = state.board.connection.codex;
-      $('#antigravity-config').textContent = state.board.connection.antigravity;
-      $('#agent-instructions').textContent = state.board.connection.instructions;
-    }
+    if (state.view === 'queue' && !queueCursor) await loadQueue();
     await loadMessages();
     if (state.selected && !state.dirty && !$('#task-detail').contains(document.activeElement)) {
       const id = state.selected;
@@ -284,12 +313,14 @@ $('#demo-next').addEventListener('click', async () => {
 
 function setView(view) {
   state.view = view;
-  const titles = { tasks: ['Cùng làm, rõ từng việc.', 'Giao việc, trao đổi và theo dõi hai bên trong một không gian.'],
+  const titles = { tasks: ['Cùng làm, rõ từng việc.', 'Giao việc, trao đổi và theo dõi các agent trong một không gian.'],
     inbox: ['Trao đổi có ngữ cảnh.', 'Tin nhắn chung và yêu cầu gửi riêng cho từng bên.'],
-    connections: ['Nối hai app đang dùng.', 'Cấu hình MCP để Codex và Antigravity dùng chung trạm phối hợp.'] };
+    connections: ['Kết nối app bạn đang dùng.', 'Chọn hồ sơ app và model, rồi thử kết nối MCP.'],
+    queue: ['Theo dõi từng lời nhắc.', 'Xem tiến độ chuyển và biên nhận từ đúng chat đã chọn.'] };
   for (const name of Object.keys(titles)) $(`#${name}-view`).hidden = name !== view;
   for (const button of document.querySelectorAll('[data-view]')) button.classList.toggle('active', button.dataset.view === view);
   [$('#view-title').textContent, $('#view-subtitle').textContent] = titles[view];
+  if (view === 'queue') loadQueue().catch(error => showNotice(error.message, true));
 }
 
 async function submitForm(event, work) {
@@ -340,10 +371,133 @@ $('#mark-read').addEventListener('click', async () => {
     showNotice('Đã đánh dấu các tin đang hiển thị.');
   } catch (error) { showNotice(error.message, true); }
 });
-for (const button of document.querySelectorAll('[data-copy]')) button.addEventListener('click', async () => {
-  try { await navigator.clipboard.writeText(state.board.connection[button.dataset.copy]); showNotice('Đã sao chép.'); }
-  catch { showNotice('Hãy chọn và sao chép nội dung cấu hình bên dưới.', true); }
+function renderProfileSeen() {
+  const selected = state.board.agents.find(agent => agent.actor === $('#profile-select').value);
+  $('#profile-seen').textContent = selected?.lastSeen ? `Lần gọi MCP cuối của hồ sơ: ${time(selected.lastSeen)}` : 'Chưa thấy hồ sơ này gọi MCP.';
+}
+
+function showAppField() {
+  const form = $('#profile-form');
+  const custom = form.elements.app.value === 'stdio';
+  $('#profile-app-label').hidden = !custom;
+  form.elements.appLabel.required = custom;
+}
+
+function fillProfile() {
+  const id = $('#profile-select').value;
+  const current = state.board.agents.find(agent => agent.actor === id);
+  const form = $('#profile-form');
+  profileKey = id || 'new';
+  profileSnippet = null;
+  const version = ++profileVersion;
+  for (const name of ['id', 'name', 'app', 'appLabel', 'model']) form.elements[name].value = current?.[name] ?? (name === 'app' ? 'stdio' : '');
+  form.elements.id.readOnly = Boolean(current);
+  form.elements.app.disabled = ['codex', 'antigravity'].includes(id);
+  showAppField();
+  $('#profile-guide').hidden = !current;
+  if (!current) return;
+  renderProfileSeen();
+  $('#profile-config').textContent = 'Đang tải cấu hình…';
+  $('#profile-copy').disabled = true;
+  api(`/api/agents/${id}`).then(config => {
+    if (version !== profileVersion) return;
+    profileSnippet = config.snippet;
+    $('#profile-config').textContent = profileSnippet;
+    $('#profile-format').textContent = current.app === 'stdio'
+      ? 'Ví dụ JSON. Nếu app dùng định dạng khác, nhập cùng command và args theo phần cấu hình STDIO của app.'
+      : `${config.settings} · ${config.format}. Chỉ thêm mục ${config.key}.`;
+    $('#profile-rollback').textContent = `Bỏ riêng mục ${config.key} đã thêm, rồi nạp lại app. Nếu đã bật đánh thức, tắt chat đích phía dưới. Công việc và hộp thư vẫn lưu.`;
+    $('#profile-copy').disabled = false;
+  }).catch(error => { if (version === profileVersion) showNotice(error.message, true); });
+}
+
+$('#profile-select').addEventListener('change', fillProfile);
+$('#profile-form').elements.app.addEventListener('change', showAppField);
+$('#profile-form').addEventListener('submit', event => submitForm(event, async () => {
+  const form = $('#profile-form'), id = $('#profile-select').value;
+  const input = { ...Object.fromEntries(new FormData(form)), app: form.elements.app.value };
+  const previousRefresh = refreshing;
+  const saved = await api(id ? `/api/agents/${id}` : '/api/agents', id ? 'PATCH' : 'POST', input);
+  if (previousRefresh) await previousRefresh;
+  if (refreshing) await refreshing;
+  await refresh();
+  $('#profile-select').value = saved.id;
+  fillProfile();
+  showNotice('Đã lưu. Dùng cấu hình của hồ sơ này để kết nối app.');
+}));
+$('#profile-copy').addEventListener('click', async () => {
+  if (!profileSnippet) return;
+  try { await navigator.clipboard.writeText(profileSnippet); showNotice('Đã sao chép cấu hình hồ sơ.'); }
+  catch { showNotice('Hãy chọn và sao chép cấu hình bên dưới.', true); }
 });
+$('#profile-check').addEventListener('click', () => refresh());
+$('#support-download').addEventListener('click', async () => {
+  try {
+    const report = await api('/api/support');
+    const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' }));
+    const link = element('a'); link.href = url; link.download = 'coordinator-support.json'; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) { showNotice(error.message, true); }
+});
+
+choices($('#queue-state'), [['', 'Tất cả'], ...Object.entries(queueLabels)]);
+async function loadQueue() {
+  if (state.board?.demo || state.view !== 'queue') return;
+  const version = ++queueVersion;
+  const params = new URLSearchParams();
+  if ($('#queue-actor').value) params.set('actor', $('#queue-actor').value);
+  if ($('#queue-state').value) params.set('state', $('#queue-state').value);
+  if (queueCursor) params.set('before', queueCursor);
+  const { jobs, next } = await api(`/api/wake/jobs?${params}`);
+  if (version !== queueVersion || state.view !== 'queue') return;
+  queueNext = next;
+  $('#queue-older').hidden = !next;
+  const list = $('#queue-list'), key = JSON.stringify(jobs);
+  if (list.dataset.jobs === key) return;
+  list.dataset.jobs = key;
+  list.replaceChildren();
+  if (!jobs.length) list.append(element('p', 'hint', 'Không có lời nhắc khớp với bộ lọc.'));
+  for (const job of jobs) {
+    const row = element('article', 'queue-row');
+    row.append(element('strong', '', `#${job.id} · ${names[job.actor]} · ${queueLabels[job.delivery]}`),
+      element('p', 'hint', [`Xếp hàng: ${time(job.created_at)}`, job.attempted_at && `Lần chuyển: ${time(job.attempted_at)}`,
+        job.acknowledged_at && `ACK: ${time(job.acknowledged_at)}`, job.overdue && 'Đã chờ trên 2 phút'].filter(Boolean).join(' · ')));
+    if (job.error) row.append(element('p', '', job.error));
+    const actions = element('div', 'setup-actions');
+    if (job.task_id || job.message_id) {
+      const source = element('button', 'secondary', job.task_id ? 'Mở công việc' : `Mở tin #${job.message_id}`);
+      source.addEventListener('click', async () => {
+        try {
+          if (job.task_id) { setView('tasks'); await selectTask(job.task_id); }
+          else { setView('inbox'); await loadMessages(job.message_id + 1); $(`#message-${job.message_id}`)?.scrollIntoView({ block: 'center' }); }
+        } catch (error) { showNotice(error.message, true); }
+      });
+      actions.append(source);
+    }
+    if (job.retry_of) actions.append(element('span', 'hint', `Gửi lại lời nhắc #${job.retry_of}`));
+    if (job.delivery === 'queued' || ['failed','unknown'].includes(job.delivery)) {
+      const cancel = job.delivery === 'queued';
+      const button = element('button', 'secondary', cancel ? 'Hủy lời nhắc' : 'Đã kiểm chat · Gửi lại');
+      button.addEventListener('click', async () => {
+        if (!cancel && !window.confirm('Bạn đã kiểm tra chat và xác nhận cần gửi thêm lời nhắc?')) return;
+        button.disabled = true;
+        try {
+          const result = await api(`/api/wake/jobs/${job.id}/${cancel ? 'cancel' : 'retry'}`, 'POST', cancel ? {} : { reviewed: true });
+          if (!cancel) { queueCursor = null; $('#queue-state').value = ''; showNotice(`Lời nhắc gửi lại: #${result.id}`); }
+          await loadQueue();
+        } catch (error) { showNotice(error.message, true); }
+        finally { button.disabled = false; }
+      });
+      actions.append(button);
+    }
+    row.append(actions);
+    list.append(row);
+  }
+}
+function refreshQueue(cursor) { queueCursor = cursor; loadQueue().catch(error => showNotice(error.message, true)); }
+for (const id of ['queue-actor','queue-state']) $(`#${id}`).addEventListener('change', () => refreshQueue(null));
+$('#queue-newest').addEventListener('click', () => refreshQueue(null));
+$('#queue-older').addEventListener('click', () => { if (queueNext) refreshQueue(queueNext); });
 refresh();
 setInterval(() => { if (!document.hidden) refresh(); }, 3000);
 

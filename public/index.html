@@ -18,8 +18,9 @@
       <button class="nav-button active" data-view="tasks"><span>▦</span> Công việc <b id="task-count">0</b></button>
       <button class="nav-button" data-view="inbox"><span>✉</span> Hộp thư chung <b id="message-count">0</b></button>
       <button class="nav-button" data-view="connections"><span>⇄</span> Kết nối MCP</button>
+      <button class="nav-button" data-view="queue" id="queue-nav" hidden><span>◷</span> Lời nhắc</button>
     </nav>
-    <div class="sidebar-note"><span class="mini-dot"></span> Hai app, một nơi phối hợp
+    <div class="sidebar-note"><span class="mini-dot"></span> Các app, một nơi phối hợp
       <p>Giao việc có người phụ trách.<br>Giữ trao đổi cùng ngữ cảnh.</p>
     </div>
     <footer>
@@ -34,7 +35,7 @@
       <span class="local-badge">● LOCAL</span>
     </header>
     <section class="page-heading">
-      <div><div class="eyebrow">CODEX × ANTIGRAVITY</div>
+      <div><div class="eyebrow">AGENT COORDINATOR MCP</div>
         <h1 id="view-title">Cùng làm, rõ từng việc.</h1>
         <p id="view-subtitle">Giao việc, trao đổi và theo dõi hai bên trong một không gian.</p>
       </div>
@@ -87,39 +88,61 @@
         </section>
       </div>
     </section>
+    <section id="queue-view" hidden>
+      <section class="panel">
+        <div class="panel-heading"><h2>Hàng đợi đánh thức</h2><button class="secondary" id="queue-newest" type="button">Mới nhất</button></div>
+        <p class="hint">Đã chuyển và đã xác nhận là hai mốc riêng. Nếu chưa rõ kết quả, kiểm tra chat trước khi gửi lại.</p>
+        <div class="filters">
+          <label>Agent<select id="queue-actor"><option value="">Tất cả</option><option value="codex">Codex</option><option value="antigravity">Antigravity</option></select></label>
+          <label>Trạng thái<select id="queue-state"><option value="">Tất cả</option></select></label>
+        </div>
+        <div id="queue-list"></div>
+        <button class="secondary" id="queue-older" type="button" hidden>Xem cũ hơn</button>
+      </section>
+    </section>
     <section id="connections-view" hidden>
+      <section id="connection-setup" class="panel setup-panel">
+        <div class="panel-heading"><h2>Hồ sơ app và model</h2><button class="secondary" id="support-download" type="button">Tải chẩn đoán</button></div>
+        <p class="hint">App khác cần hỗ trợ MCP STDIO. Model được chọn trong app đó; trạm chỉ lưu tên bạn muốn dùng.</p>
+        <label>Hồ sơ<select id="profile-select"></select></label>
+        <form id="profile-form">
+          <div class="form-row">
+            <label>Mã agent<input name="id" pattern="[a-z][a-z0-9_\-]{0,31}" maxlength="32" required placeholder="vi-du-review"></label>
+            <label>Tên hiển thị<input name="name" maxlength="60" required placeholder="Ví dụ: Agent review"></label>
+          </div>
+          <div class="form-row">
+            <label>Ứng dụng<select name="app"><option value="codex">Codex</option><option value="antigravity">Antigravity</option><option value="claude-desktop">Claude Desktop</option><option value="cursor">Cursor</option><option value="vscode">VS Code</option><option value="gemini-cli">Gemini CLI</option><option value="stdio">App MCP STDIO khác</option></select></label>
+            <label id="profile-app-label">Tên app khác<input name="appLabel" maxlength="60" placeholder="Ví dụ: app hoặc CLI bạn đang dùng"></label>
+            <label>Model<input name="model" maxlength="100" list="known-models" placeholder="Nhập hoặc chọn tên model đã lưu"><datalist id="known-models"></datalist></label>
+          </div>
+          <button class="primary" type="submit">Lưu hồ sơ</button>
+        </form>
+        <div id="profile-guide" hidden>
+          <h3>Kết nối hồ sơ đã lưu</h3>
+          <ol>
+            <li>Trong app đã chọn, đặt model theo hồ sơ và thêm cấu hình STDIO bên dưới. Chỉ ghép mục mới với cấu hình hiện có.</li>
+            <li>Nạp lại cấu hình MCP của app. Trong chat thử, gọi <code>coordinator_list_tasks</code>.</li>
+            <li>Kiểm tra lần gọi của đúng hồ sơ bên dưới, rồi giao một việc mẫu.</li>
+          </ol>
+          <div class="setup-actions"><button class="secondary" id="profile-copy" type="button">Sao chép cấu hình</button><button class="secondary" id="profile-check" type="button">Kiểm tra lần gọi</button></div>
+          <p id="profile-format" class="hint"></p><pre id="profile-config"></pre>
+          <p id="profile-seen" role="status" class="hint"></p>
+          <details><summary>Quay lại cấu hình cũ</summary><p id="profile-rollback"></p></details>
+        </div>
+        <details><summary>Sao lưu và phục hồi</summary><p>Chạy trong thư mục app. Kho đích phải là thư mục chưa tồn tại; đánh thức mặc định tắt sau khi phục hồi.</p>
+          <pre>npm run backup -- "coordinator-backup.sqlite"
+npm run restore -- "coordinator-backup.sqlite" "coordinator-restore"</pre>
+        </details>
+      </section>
       <section class="panel">
         <h2>Đánh thức chat</h2>
         <p id="wake-worker-status" class="hint"></p>
-        <p id="wake-setup">Chọn UUID chat đang dùng cho mỗi agent. Khi bật, việc và tin mới sẽ gửi lời nhắc vào chat đó qua worker nền.</p>
+        <p id="wake-setup">Đánh thức tự động hỗ trợ hai hồ sơ tích hợp Codex và Antigravity. Các hồ sơ khác đọc việc, gửi tin và cập nhật tiến độ khi gọi MCP.</p>
         <p class="hint">Cần worker đang chạy. “Đã chuyển” chỉ xác nhận bridge nhận lệnh; “Chat đã nhận” cần agent xác nhận qua MCP.</p>
         <div id="wake-readiness" class="wake-readiness"></div>
         <div id="wake-targets"></div>
         <h3>Lần đánh thức gần đây</h3><div id="wake-history"></div>
       </section>
-      <div id="connection-setup">
-      <div class="connection-intro panel">
-        <h2>Giữ app bạn đang dùng.</h2>
-        <p>Thêm máy chủ MCP dưới đây vào từng app. Hai bên sẽ đọc việc, cập nhật tiến độ và trao đổi qua cùng kho dữ liệu local.</p>
-        <p class="hint">Khi bắt đầu hoặc tiếp tục phiên, nhắn agent kiểm tra hộp thư. MCP trao đổi dữ liệu khi agent gọi công cụ.</p>
-      </div>
-      <div class="agents-grid">
-        <section class="panel config-card">
-          <div class="panel-heading"><h2>Codex</h2><button class="secondary" data-copy="codex">Sao chép</button></div>
-          <p>Thêm vào cấu hình MCP hoặc Settings → MCP servers của app Codex.</p>
-          <pre id="codex-config"></pre>
-        </section>
-        <section class="panel config-card">
-          <div class="panel-heading"><h2>Antigravity</h2><button class="secondary" data-copy="antigravity">Sao chép</button></div>
-          <p>Thêm mục agent_coordinator_standalone vào mcpServers trong cấu hình hiện có.</p>
-          <pre id="antigravity-config"></pre>
-        </section>
-      </div>
-      <section class="panel">
-        <div class="panel-heading"><h2>Lời nhắc dùng chung cho hai bên</h2><button class="secondary" data-copy="instructions">Sao chép</button></div>
-        <p id="agent-instructions"></p>
-      </section>
-      </div>
     </section>
   </main>
   <dialog id="task-dialog">

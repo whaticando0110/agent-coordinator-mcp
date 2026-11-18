@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { agents, appDirectory, appName, connectionConfig, coordinatorPort, dataDirectory, defaultPort, workspaceKey } from './config.mjs';
+import { agents, appDirectory, appName, connectionConfig, coordinatorPort, dataDirectory, defaultPort, profileConnection, workspaceKey } from './config.mjs';
 import { AppError, openStore } from './store.mjs';
 import { readWakeBridges } from './wake-bridges.mjs';
 
@@ -63,6 +63,21 @@ export function createCoordinatorServer({ directory = dataDirectory(), port = de
         version: '0.1.0', mode: demo ? 'demo' : 'live', workspace: demo ? null : workspace });
       if (request.method === 'GET' && url.pathname === '/api/readiness' && !demo)
         return send(response, 200, await readiness());
+      if (request.method === 'GET' && url.pathname === '/api/support' && !demo) {
+        const report = await readiness();
+        return send(response, 200, { app: appName, node: process.versions.node, platform: process.platform,
+          workerOnline: report.workerOnline, registeredAgents: store.profiles().length,
+          wake: report.agents.map(({ actor, bridge, lastMcpAt, targetEnabled, queued, uncertain }) => ({
+            adapter: actor, bridge, mcpSeen: lastMcpAt !== null, targetEnabled, queued, uncertain
+          })) });
+      }
+      if (request.method === 'GET' && url.pathname === '/api/wake/jobs' && !demo)
+        return send(response, 200, store.wakeJobs({ actor: url.searchParams.get('actor') || undefined,
+          state: url.searchParams.get('state') || undefined,
+          before: url.searchParams.has('before') ? Number(url.searchParams.get('before')) : undefined }));
+      const profileRoute = /^\/api\/agents\/([a-z][a-z0-9_-]{0,31})$/.exec(url.pathname);
+      if (request.method === 'GET' && profileRoute && !demo)
+        return send(response, 200, profileConnection(directory, store.profile(profileRoute[1])));
       if (request.method === 'GET' && url.pathname === '/api/state') return send(response, 200, { ...store.board(), token,
         dataDirectory: demo ? null : directory, connection: demo ? null : connectionConfig(directory), wake: store.wakeState(),
         demo: demo?.snapshot() ?? null, readiness: demo ? null : await readiness() });
@@ -79,6 +94,17 @@ export function createCoordinatorServer({ directory = dataDirectory(), port = de
       if (demo) {
         if (request.method === 'POST' && url.pathname === '/api/demo/advance') return send(response, 200, await demo.advance(body.step));
         throw new AppError(403, 'demo_readonly', 'Bản mô phỏng chỉ thay đổi qua các bước mẫu.');
+      }
+      if (request.method === 'POST' && url.pathname === '/api/agents')
+        return send(response, 201, store.saveProfile(body.id, body, { create: true }));
+      if (request.method === 'PATCH' && profileRoute)
+        return send(response, 200, store.saveProfile(profileRoute[1], body));
+      const wakeJob = /^\/api\/wake\/jobs\/([1-9][0-9]*)\/(cancel|retry)$/.exec(url.pathname);
+      if (request.method === 'POST' && wakeJob) {
+        const id = Number(wakeJob[1]);
+        if (!Number.isSafeInteger(id)) throw new AppError(400, 'wake_id', 'Mã lời nhắc không hợp lệ.');
+        if (wakeJob[2] === 'cancel') return send(response, 200, store.cancelWake(id));
+        return send(response, 202, store.retryWake(id, body.reviewed));
       }
       const wakeTarget = /^\/api\/wake\/(codex|antigravity)$/.exec(url.pathname);
       if (request.method === 'PATCH' && wakeTarget) return send(response, 200, store.setWakeTarget(wakeTarget[1], body));

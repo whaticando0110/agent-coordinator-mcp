@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
-import { agents, actors, statuses } from './config.mjs';
+import { agentApps, agentIdPattern, agents, statuses } from './config.mjs';
 
 export class AppError extends Error {
   constructor(status, code, message) { super(message); this.status = status; this.code = code; }
@@ -23,7 +23,7 @@ export function openStore(directory, now = Date.now) {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(path.join(directory, 'coordinator.sqlite'), { timeout: 5000 });
   let closed = false;
-  db.exec('PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;');
+  db.exec('PRAGMA foreign_keys=OFF; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;');
   const transaction = work => {
     db.exec('BEGIN IMMEDIATE');
     try { const result = work(); db.exec('COMMIT'); return result; }
@@ -32,17 +32,20 @@ export function openStore(directory, now = Date.now) {
   try {
     transaction(() => {
       const version = db.prepare('PRAGMA user_version').get().user_version;
-      if (![0, 1].includes(version)) throw Error('Phiên bản dữ liệu điều phối chưa được hỗ trợ.');
+      if (![0, 1, 2].includes(version)) throw Error('Phiên bản dữ liệu điều phối chưa được hỗ trợ.');
+      const taskTable = `(
+        id TEXT PRIMARY KEY, title TEXT NOT NULL, details TEXT NOT NULL, owner TEXT NOT NULL REFERENCES agent_profiles(id),
+        status TEXT NOT NULL, progress INTEGER NOT NULL, note TEXT NOT NULL,
+        link TEXT NOT NULL, created_by TEXT NOT NULL, created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL, revision INTEGER NOT NULL, request_key TEXT UNIQUE,
+        CHECK(status IN ('queued','in_progress','blocked','review','done')),
+        CHECK(progress BETWEEN 0 AND 100))`;
       db.exec(`
-        CREATE TABLE IF NOT EXISTS tasks (
-          id TEXT PRIMARY KEY, title TEXT NOT NULL, details TEXT NOT NULL, owner TEXT NOT NULL,
-          status TEXT NOT NULL, progress INTEGER NOT NULL, note TEXT NOT NULL,
-          link TEXT NOT NULL, created_by TEXT NOT NULL, created_at INTEGER NOT NULL,
-          updated_at INTEGER NOT NULL, revision INTEGER NOT NULL,
-          request_key TEXT UNIQUE,
-          CHECK(owner IN ('codex','antigravity')),
-          CHECK(status IN ('queued','in_progress','blocked','review','done')),
-          CHECK(progress BETWEEN 0 AND 100));
+        CREATE TABLE IF NOT EXISTS agent_profiles (
+          id TEXT PRIMARY KEY, name TEXT NOT NULL, app TEXT NOT NULL, appLabel TEXT NOT NULL, model TEXT NOT NULL
+        );
+        INSERT OR IGNORE INTO agent_profiles VALUES ('codex','Codex','codex','',''), ('antigravity','Antigravity','antigravity','','');
+        CREATE TABLE IF NOT EXISTS tasks ${taskTable};
         CREATE TABLE IF NOT EXISTS messages (
           id INTEGER PRIMARY KEY AUTOINCREMENT, author TEXT NOT NULL, recipient TEXT NOT NULL,
           body TEXT NOT NULL, task_id TEXT REFERENCES tasks(id), created_at INTEGER NOT NULL,
@@ -68,9 +71,17 @@ export function openStore(directory, now = Date.now) {
         CREATE TABLE IF NOT EXISTS presence (actor TEXT PRIMARY KEY, last_seen INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS messages_task ON messages(task_id, id);
         CREATE INDEX IF NOT EXISTS events_task ON events(task_id, id);
-        PRAGMA user_version=1;
       `);
+      if (version === 1) {
+        db.exec(`CREATE TABLE tasks_v2 ${taskTable};
+          INSERT INTO tasks_v2 SELECT * FROM tasks ORDER BY rowid;
+          DROP TABLE tasks;
+          ALTER TABLE tasks_v2 RENAME TO tasks;`);
+      }
+      if (version !== 2 && db.prepare('PRAGMA foreign_key_check').get()) throw Error('Không thể nâng cấp kho: có liên kết dữ liệu không hợp lệ.');
+      if (version !== 2) db.exec('PRAGMA user_version=2;');
     });
+    db.exec('PRAGMA foreign_keys=ON;');
   } catch (error) { db.close(); throw error; }
 
   const task = id => {
@@ -83,12 +94,19 @@ export function openStore(directory, now = Date.now) {
     .run(id, actor, body, now());
   const requestKey = (actor, input) => input === undefined ? null : `${actor}:${text(input, 'Mã yêu cầu', 100)}`;
   const canRead = (message, actor) => actor === 'user' || message.author === actor || message.recipient === actor || message.recipient === 'all';
+  const profiles = () => db.prepare('SELECT * FROM agent_profiles ORDER BY rowid').all();
+  const profile = id => {
+    const item = typeof id === 'string' && db.prepare('SELECT * FROM agent_profiles WHERE id=?').get(id);
+    if (!item) throw new AppError(400, 'agent_unknown', 'Hồ sơ agent không tồn tại.');
+    return item;
+  };
+  const checkActor = actor => { if (actor !== 'user') profile(actor); };
   const touch = actor => {
-    choice(actor, actors, 'Người dùng');
+    checkActor(actor);
     if (actor !== 'user') db.prepare('INSERT INTO presence VALUES(?,?) ON CONFLICT(actor) DO UPDATE SET last_seen=excluded.last_seen').run(actor, now());
   };
   const messages = (actor, { taskId, before, limit = 100 } = {}) => {
-    choice(actor, actors, 'Người dùng');
+    checkActor(actor);
     if (!Number.isInteger(limit) || limit < 1 || limit > 200 || (before !== undefined && (!Number.isSafeInteger(before) || before < 1)))
       throw new AppError(400, 'invalid_input', 'Phân trang hộp thư không hợp lệ.');
     if (taskId) task(taskId);
@@ -104,6 +122,25 @@ export function openStore(directory, now = Date.now) {
       .run(actor, target.conversation_id, `${actor}:${source}`, now());
   };
   return {
+    profile, profiles,
+    saveProfile(id, input, { create = false } = {}) {
+      if (typeof id !== 'string' || !agentIdPattern.test(id) || ['user','all','wake_worker'].includes(id))
+        throw new AppError(400, 'agent_id', 'Mã agent cần bắt đầu bằng chữ thường và chỉ gồm chữ thường, số, gạch dưới hoặc gạch ngang.');
+      const name = text(input.name, 'Tên hiển thị', 60), model = text(input.model ?? '', 'Model', 100, true);
+      const app = choice(input.app, agentApps, 'Ứng dụng');
+      if (agents.includes(id) && app !== id) throw new AppError(400, 'bridge_identity', 'Giữ đúng app cho hồ sơ có bridge tích hợp.');
+      const appLabel = app === 'stdio' ? text(input.appLabel, 'Tên ứng dụng MCP', 60) : '';
+      return transaction(() => {
+        if (create) {
+          if (!db.prepare('INSERT OR IGNORE INTO agent_profiles VALUES(?,?,?,?,?)').run(id, name, app, appLabel, model).changes)
+            throw new AppError(409, 'agent_exists', 'Mã agent đã được dùng.');
+        } else {
+          profile(id);
+          db.prepare('UPDATE agent_profiles SET name=?,app=?,appLabel=?,model=? WHERE id=?').run(name, app, appLabel, model, id);
+        }
+        return profile(id);
+      });
+    },
     wakeHeartbeat() {
       db.prepare("INSERT INTO presence VALUES('wake_worker',?) ON CONFLICT(actor) DO UPDATE SET last_seen=excluded.last_seen").run(now());
     },
@@ -111,6 +148,42 @@ export function openStore(directory, now = Date.now) {
       return { targets: db.prepare('SELECT * FROM wake_targets ORDER BY actor').all(),
         workerLastSeen: db.prepare("SELECT last_seen FROM presence WHERE actor='wake_worker'").get()?.last_seen ?? null,
         jobs: db.prepare('SELECT * FROM wake_jobs ORDER BY id DESC LIMIT 30').all() };
+    },
+    wakeJobs({ actor, state, before } = {}) {
+      if (actor) choice(actor, agents, 'Agent');
+      if (state) choice(state, ['queued','sending','accepted','acknowledged','failed','unknown','cancelled'], 'Trạng thái lời nhắc');
+      if (before !== undefined && (!Number.isSafeInteger(before) || before < 1))
+        throw new AppError(400, 'invalid_input', 'Mốc danh sách không hợp lệ.');
+      const rows = db.prepare(`SELECT j.id, j.actor, j.created_at, j.attempted_at, j.acknowledged_at, j.error,
+        CASE WHEN j.acknowledged_at IS NOT NULL THEN 'acknowledged' ELSE j.state END AS delivery,
+        m.id AS message_id, m.task_id,
+        CASE WHEN substr(j.source_key,length(j.actor)+1,7)=':retry:' THEN CAST(substr(j.source_key,length(j.actor)+8) AS INTEGER) END AS retry_of
+        FROM wake_jobs j LEFT JOIN messages m ON m.id=CASE WHEN substr(j.source_key,length(j.actor)+1,9)=':message:'
+          THEN CAST(substr(j.source_key,length(j.actor)+10) AS INTEGER) END
+        WHERE (? IS NULL OR j.actor=?) AND (? IS NULL OR delivery=?) AND (? IS NULL OR j.id<?)
+        ORDER BY j.id DESC LIMIT 51`).all(actor ?? null, actor ?? null, state ?? null, state ?? null, before ?? null, before ?? null);
+      // An old item may have waited before delivery; measure the waiting stage separately.
+      const at = now(), jobs = rows.slice(0, 50).map(job => ({ ...job,
+        overdue: (job.delivery === 'queued' && at - job.created_at >= 120000) ||
+          (job.delivery === 'accepted' && at - job.attempted_at >= 120000) }));
+      return { jobs, next: rows.length > 50 ? jobs.at(-1).id : null };
+    },
+    cancelWake(id) {
+      const updated = db.prepare("UPDATE wake_jobs SET state='cancelled' WHERE id=? AND state='queued'").run(id);
+      if (!updated.changes) throw new AppError(409, 'wake_not_queued', 'Chỉ hủy được lời nhắc còn chờ chuyển.');
+      return { cancelled: true };
+    },
+    retryWake(id, reviewed) {
+      if (reviewed !== true) throw new AppError(400, 'wake_not_reviewed', 'Cần kiểm tra chat trước khi gửi lại.');
+      return transaction(() => {
+        const job = db.prepare('SELECT * FROM wake_jobs WHERE id=?').get(id);
+        if (!job || !['failed', 'unknown'].includes(job.state) || job.acknowledged_at !== null)
+          throw new AppError(409, 'wake_not_retryable', 'Lời nhắc không còn ở trạng thái có thể gửi lại.');
+        const target = db.prepare('SELECT * FROM wake_targets WHERE actor=? AND enabled=1 AND conversation_id=?').get(job.actor, job.conversation_id);
+        if (!target) throw new AppError(409, 'wake_target_changed', 'Chat đích đã đổi hoặc đã tắt.');
+        enqueueWake(job.actor, `retry:${id}`);
+        return { id: db.prepare('SELECT id FROM wake_jobs WHERE source_key=?').get(`${job.actor}:retry:${id}`).id };
+      });
     },
     wakeCounts() {
       const rows = db.prepare(`SELECT actor, sum(state='queued') AS queued,
@@ -176,27 +249,31 @@ export function openStore(directory, now = Date.now) {
       });
     },
     acknowledgeWake(actor, ids) {
-      choice(actor, agents, 'Agent');
+      profile(actor);
       if (!Array.isArray(ids) || !ids.length || ids.length > 200 || ids.some(id => !Number.isSafeInteger(id) || id < 1))
         throw new AppError(400, 'wake_ids', 'Mã đánh thức không hợp lệ.');
       return transaction(() => {
         let acknowledged = 0;
-        for (const id of ids) acknowledged += db.prepare("UPDATE wake_jobs SET acknowledged_at=? WHERE id=? AND actor=? AND state IN ('sending','accepted','unknown') AND acknowledged_at IS NULL")
-          .run(now(), id, actor).changes;
+        for (const id of ids) {
+          const updated = db.prepare("UPDATE wake_jobs SET acknowledged_at=? WHERE id=? AND actor=? AND state IN ('sending','accepted','unknown') AND acknowledged_at IS NULL")
+            .run(now(), id, actor).changes;
+          acknowledged += updated;
+          if (updated) db.prepare("UPDATE wake_jobs SET state='cancelled' WHERE source_key=? AND state='queued'").run(`${actor}:retry:${id}`);
+        }
         return { acknowledged };
       });
     },
     close() { if (!closed) { db.close(); closed = true; } }, touch, task,
     listTasks({ owner, status } = {}) {
-      if (owner) choice(owner, agents, 'Bên phụ trách');
+      if (owner) profile(owner);
       if (status) choice(status, statuses, 'Trạng thái');
       return db.prepare(`SELECT id FROM tasks WHERE (? IS NULL OR owner=?) AND (? IS NULL OR status=?) ORDER BY updated_at DESC, rowid DESC`)
         .all(owner ?? null, owner ?? null, status ?? null, status ?? null).map(row => task(row.id));
     },
     createTask(actor, input) {
-      choice(actor, actors, 'Người gửi');
+      checkActor(actor);
       const title = text(input.title, 'Tiêu đề', 180), details = text(input.details ?? '', 'Mô tả', 12000, true);
-      const owner = choice(input.owner, agents, 'Bên phụ trách');
+      const owner = profile(input.owner).id;
       const key = requestKey(actor, input.requestId);
       return transaction(() => {
         const prior = key && db.prepare('SELECT * FROM tasks WHERE request_key=?').get(key);
@@ -215,7 +292,7 @@ export function openStore(directory, now = Date.now) {
       });
     },
     updateTask(actor, id, input) {
-      choice(actor, actors, 'Người dùng');
+      checkActor(actor);
       return transaction(() => {
         const current = task(id);
         if (actor !== 'user' && current.owner !== actor) throw new AppError(403, 'wrong_owner', 'Chỉ bên phụ trách được cập nhật tiến độ.');
@@ -236,9 +313,9 @@ export function openStore(directory, now = Date.now) {
     },
     messages,
     sendMessage(actor, input) {
-      choice(actor, actors, 'Người gửi');
+      checkActor(actor);
       const body = text(input.body, 'Tin nhắn', 12000);
-      const recipient = choice(input.recipient, [...actors, 'all'], 'Người nhận');
+      const recipient = input.recipient === 'all' || input.recipient === 'user' ? input.recipient : profile(input.recipient).id;
       const taskId = input.taskId || null, key = requestKey(actor, input.requestId);
       return transaction(() => {
         if (taskId) task(taskId);
@@ -257,7 +334,7 @@ export function openStore(directory, now = Date.now) {
       });
     },
     markRead(actor, ids) {
-      choice(actor, actors, 'Người đọc');
+      checkActor(actor);
       if (!Array.isArray(ids) || !ids.length || ids.length > 200 || ids.some(id => !Number.isSafeInteger(id) || id < 1))
         throw new AppError(400, 'invalid_input', 'Danh sách tin nhắn không hợp lệ.');
       return transaction(() => {
@@ -277,9 +354,9 @@ export function openStore(directory, now = Date.now) {
       const tasks = this.listTasks();
       const unread = actor => db.prepare(`SELECT count(*) AS n FROM messages m LEFT JOIN receipts r ON r.message_id=m.id AND r.actor=?
         WHERE m.author<>? AND (?='user' OR m.recipient=? OR m.recipient='all') AND r.message_id IS NULL`).get(actor, actor, actor, actor).n;
-      return { tasks, userUnread: unread('user'), agents: agents.map(actor => ({ actor,
-        lastSeen: db.prepare('SELECT last_seen FROM presence WHERE actor=?').get(actor)?.last_seen ?? null,
-        unread: unread(actor) })) };
+      return { tasks, userUnread: unread('user'), agents: profiles().map(item => ({ ...item, actor: item.id,
+        lastSeen: db.prepare('SELECT last_seen FROM presence WHERE actor=?').get(item.id)?.last_seen ?? null,
+        unread: unread(item.id) })) };
     }
   };
 }
