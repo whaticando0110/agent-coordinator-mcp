@@ -1,0 +1,12 @@
+node_modules/
+.run/
+.env
+.env.*
+*.sqlite*
+*.db
+*.db-wal
+*.db-shm
+*.log
+*.bak
+wake-config.json
+test-results/
