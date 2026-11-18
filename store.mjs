@@ -112,12 +112,27 @@ export function openStore(directory, now = Date.now) {
         workerLastSeen: db.prepare("SELECT last_seen FROM presence WHERE actor='wake_worker'").get()?.last_seen ?? null,
         jobs: db.prepare('SELECT * FROM wake_jobs ORDER BY id DESC LIMIT 30').all() };
     },
+    wakeCounts() {
+      const rows = db.prepare(`SELECT actor, sum(state='queued') AS queued,
+        sum(state='unknown' AND acknowledged_at IS NULL) AS uncertain
+        FROM wake_jobs WHERE state IN ('queued','unknown') GROUP BY actor`).all();
+      return Object.fromEntries(agents.map(actor => {
+        const row = rows.find(item => item.actor === actor);
+        return [actor, { queued: row?.queued ?? 0, uncertain: row?.uncertain ?? 0 }];
+      }));
+    },
+    lastSeen() {
+      return Object.fromEntries(db.prepare('SELECT actor, last_seen FROM presence').all().map(row => [row.actor, row.last_seen]));
+    },
     setWakeTarget(actor, { conversationId, enabled }) {
       choice(actor, agents, 'Agent');
       if (typeof enabled !== 'boolean' || typeof conversationId !== 'string' ||
           !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(conversationId))
         throw new AppError(400, 'wake_target', 'Cần UUID chat đích và trạng thái bật/tắt.');
       return transaction(() => {
+        const current = db.prepare('SELECT conversation_id, enabled FROM wake_targets WHERE actor=?').get(actor);
+        if (current?.conversation_id.toLowerCase() === conversationId.toLowerCase() && Boolean(current.enabled) === enabled)
+          return this.wakeState();
         // A new binding must never dispatch old requests into the new conversation.
         db.prepare("UPDATE wake_jobs SET state='cancelled' WHERE actor=? AND state='queued'").run(actor);
         db.prepare('INSERT INTO wake_targets VALUES(?,?,?) ON CONFLICT(actor) DO UPDATE SET conversation_id=excluded.conversation_id,enabled=excluded.enabled')
@@ -134,16 +149,18 @@ export function openStore(directory, now = Date.now) {
         return this.wakeState();
       });
     },
-    claimWake() {
+    claimWake(eligible = agents) {
+      for (const actor of eligible) choice(actor, agents, 'Agent');
       return transaction(() => {
         // An interrupted send has an uncertain outcome. Never silently resend it.
         db.prepare("UPDATE wake_jobs SET state='unknown',error='Worker dừng hoặc quá hạn; kiểm tra chat trước khi đánh thức lại.' WHERE state='sending' AND attempted_at<?")
           .run(now() - 120000);
         const job = db.prepare(`SELECT j.* FROM wake_jobs j JOIN wake_targets t ON t.actor=j.actor
-          AND t.enabled=1 AND t.conversation_id=j.conversation_id WHERE j.state='queued'
+          AND t.enabled=1 AND t.conversation_id=j.conversation_id WHERE j.state='queued' AND j.actor IN (?,?)
           AND (SELECT count(DISTINCT attempted_at) FROM wake_jobs h WHERE h.actor=j.actor AND h.attempted_at>?)<10
           AND NOT EXISTS(SELECT 1 FROM wake_jobs p WHERE p.actor=j.actor AND
-            (p.state='sending' OR p.attempted_at>?)) ORDER BY j.id LIMIT 1`).get(now() - 3600000, now() - 30000);
+            (p.state='sending' OR p.attempted_at>?)) ORDER BY j.id LIMIT 1`)
+          .get(eligible.includes('codex') ? 'codex' : null, eligible.includes('antigravity') ? 'antigravity' : null, now() - 3600000, now() - 30000);
         if (!job) return null;
         const ids = db.prepare("SELECT id FROM wake_jobs WHERE actor=? AND conversation_id=? AND state='queued' ORDER BY id LIMIT 200")
           .all(job.actor, job.conversation_id).map(row => row.id);

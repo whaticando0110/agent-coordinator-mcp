@@ -3,8 +3,9 @@ import { readFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { appDirectory, connectionConfig, dataDirectory } from './config.mjs';
+import { agents, appDirectory, appName, connectionConfig, coordinatorPort, dataDirectory, defaultPort, workspaceKey } from './config.mjs';
 import { AppError, openStore } from './store.mjs';
+import { readWakeBridges } from './wake-bridges.mjs';
 
 const assets = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
@@ -28,9 +29,18 @@ async function readBody(request) {
   return body;
 }
 
-export function createCoordinatorServer({ directory = dataDirectory(), port = 4330, demoSetup } = {}) {
+export function createCoordinatorServer({ directory = dataDirectory(), port = defaultPort, demoSetup } = {}) {
   const store = openStore(directory), token = randomBytes(32).toString('hex');
   const demo = demoSetup?.(store);
+  const workspace = workspaceKey(directory);
+  async function readiness() {
+    const { statuses } = await readWakeBridges(directory);
+    const targets = store.wakeState().targets, presence = store.lastSeen(), counts = store.wakeCounts();
+    const workerLastSeen = presence.wake_worker ?? null;
+    return { workerLastSeen, workerOnline: workerLastSeen !== null && Date.now() - workerLastSeen < 15000,
+      agents: agents.map(actor => ({ actor, lastMcpAt: presence[actor] ?? null, bridge: statuses[actor],
+        targetEnabled: Boolean(targets.find(target => target.actor === actor)?.enabled), ...counts[actor] })) };
+  }
   const send = (response, code, data) => { response.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' }); response.end(JSON.stringify(data)); };
   const server = http.createServer(async (request, response) => {
     response.setHeader('Cache-Control', 'no-store');
@@ -49,11 +59,13 @@ export function createCoordinatorServer({ directory = dataDirectory(), port = 43
         response.end(await readFile(path.join(appDirectory, 'public', name)));
         return;
       }
-      if (request.method === 'GET' && url.pathname === '/api/health') return send(response, 200, { app: 'agent-coordinator-mcp',
-        version: '0.1.0', mode: demo ? 'demo' : 'live' });
+      if (request.method === 'GET' && url.pathname === '/api/health') return send(response, 200, { app: appName,
+        version: '0.1.0', mode: demo ? 'demo' : 'live', workspace: demo ? null : workspace });
+      if (request.method === 'GET' && url.pathname === '/api/readiness' && !demo)
+        return send(response, 200, await readiness());
       if (request.method === 'GET' && url.pathname === '/api/state') return send(response, 200, { ...store.board(), token,
         dataDirectory: demo ? null : directory, connection: demo ? null : connectionConfig(directory), wake: store.wakeState(),
-        demo: demo?.snapshot() ?? null });
+        demo: demo?.snapshot() ?? null, readiness: demo ? null : await readiness() });
       if (request.method === 'GET' && url.pathname === '/api/messages') {
         const before = url.searchParams.get('before');
         return send(response, 200, { messages: store.messages('user', { taskId: url.searchParams.get('taskId') || undefined,
@@ -91,8 +103,7 @@ export function createCoordinatorServer({ directory = dataDirectory(), port = 43
 }
 
 async function main() {
-  const port = Number(process.env.COORDINATOR_PORT || 4330);
-  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw Error('COORDINATOR_PORT không hợp lệ.');
+  const port = coordinatorPort();
   const app = createCoordinatorServer({ port });
   await app.listen();
   console.log(`Điều phối Codex và Antigravity tại http://127.0.0.1:${port}`);

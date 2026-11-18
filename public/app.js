@@ -350,8 +350,24 @@ setInterval(() => { if (!document.hidden) refresh(); }, 3000);
 function renderWake() {
   const lastSeen = state.board.wake.workerLastSeen;
   const demo = Boolean(state.board.demo);
+  const report = state.board.readiness;
   $('#wake-worker-status').textContent = demo ? 'Mô phỏng worker · không kết nối app AI thật' :
-    lastSeen && Date.now() - lastSeen < 15000 ? 'Worker đang kết nối' : 'Worker chưa kết nối · mở hoặc tải lại Antigravity để chạy sidecar';
+    report?.workerOnline ? `Worker báo còn hoạt động · ${time(lastSeen)}` : 'Chưa thấy worker · công việc và tin nhắn vẫn dùng được qua MCP';
+  const readiness = $('#wake-readiness');
+  readiness.hidden = !report;
+  if (report) {
+    const labels = { configured: 'Đã tìm thấy tệp chạy bridge', not_configured: 'Chưa cấu hình bridge',
+      config_unreadable: 'Không đọc được cấu hình bridge', invalid_config: 'Cấu hình bridge không hợp lệ',
+      invalid_executable: 'Đường dẫn bridge không hợp lệ', unavailable_executable: 'Không mở được tệp chạy bridge' };
+    readiness.replaceChildren(...report.agents.map(agent => {
+      const card = element('div', 'wake-readiness-card');
+      card.append(element('strong', '', names[agent.actor]),
+        element('span', '', agent.lastMcpAt ? `Lần gọi MCP cuối: ${time(agent.lastMcpAt)}` : 'Chưa thấy gọi MCP'),
+        element('span', '', `${labels[agent.bridge]} · ${agent.targetEnabled ? 'Đã bật chat đích' : 'Chưa bật chat đích'}`),
+        element('span', '', `${agent.queued} chờ chuyển · ${agent.uncertain} cần kiểm tra trong chat`));
+      return card;
+    }));
+  }
   const panel = $('#wake-targets');
   $('#wake-setup').hidden = panel.hidden = demo;
   if (!demo && !panel.childElementCount) for (const actor of ['codex', 'antigravity']) {

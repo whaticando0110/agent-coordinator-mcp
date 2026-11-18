@@ -1,10 +1,10 @@
 import { spawn } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { dataDirectory } from './config.mjs';
+import { agents, dataDirectory } from './config.mjs';
 import { openStore } from './store.mjs';
+import { readWakeBridges, validExecutable } from './wake-bridges.mjs';
 
 export function wakePrompt(job) {
   return `[Trạm phối hợp / wake ${job.ids.join(',')}]
@@ -17,7 +17,7 @@ Không gửi trả lời chỉ để đánh thức bên kia.`;
 
 export function commandFor(job, config) {
   const executable = config?.[job.actor]?.executable;
-  if (!executable || !path.isAbsolute(executable) || /\.(cmd|bat|ps1)$/i.test(executable))
+  if (!validExecutable(executable))
     throw Error('Cần đường dẫn tuyệt đối tới executable trực tiếp trong wake-config.json; không dùng shell script.');
   const prompt = wakePrompt(job);
   if (job.actor === 'codex') return { executable, args: ['queue', '--thread', job.conversation_id, '--message', prompt, ...(config.codex.resume === true ? ['--resume'] : [])] };
@@ -50,7 +50,7 @@ export function execute({ executable, args }) {
 
 export async function dispatchOnce(store, config, run = execute) {
   store.wakeHeartbeat();
-  const job = store.claimWake();
+  const job = store.claimWake(agents.filter(actor => validExecutable(config?.[actor]?.executable)));
   if (!job) return null;
   let result;
   try { result = await run(commandFor(job, config)); }
@@ -68,9 +68,7 @@ async function main() {
   try {
     do {
       // Reload only local administrator-owned configuration. The HTTP/MCP API cannot set commands.
-      let config = {};
-      try { config = JSON.parse(await readFile(path.join(directory, 'wake-config.json'), 'utf8')); }
-      catch (error) { if (error.code !== 'ENOENT') console.error('Không đọc được wake-config.json.'); }
+      const { config } = await readWakeBridges(directory);
       const result = await dispatchOnce(store, config);
       if (result) console.log(JSON.stringify(result));
       if (!values.once && !stopped) await new Promise(resolve => setTimeout(resolve, 2000));

@@ -4,24 +4,25 @@ try {
     $nodePath = (Get-Command node.exe -ErrorAction Stop).Source
     $nodeMajor = & $nodePath -p 'parseInt(process.versions.node)'
     if ([int]$nodeMajor -lt 24) { throw 'Node.js 24 or newer is required.' }
-    $port = 4330
-    if ($env:COORDINATOR_PORT) { $port = [int]$env:COORDINATOR_PORT }
-    $address = "http://127.0.0.1:$port"
+    $config = & $nodePath (Join-Path $appRoot 'doctor.mjs') --launch-config
+    if ($LASTEXITCODE -ne 0) { throw 'Invalid coordinator settings. Run npm run doctor in a terminal.' }
+    $local = $config | ConvertFrom-Json
+    $address = $local.address
+    $dataPath = $local.directory
     function Get-CoordinatorHealth {
         try { return Invoke-RestMethod -Uri "$address/api/health" -TimeoutSec 1 }
         catch { return $null }
     }
     function Test-LiveCoordinator {
         $health = Get-CoordinatorHealth
-        return ($health.app -eq 'agent-coordinator-mcp' -and $health.mode -eq 'live')
+        if (-not $health) { return $false }
+        if ($health.app -eq 'agent-coordinator-mcp' -and $health.mode -eq 'live' -and $health.workspace -eq $local.workspace) { return $true }
+        throw "Port at $address is responding, but it is not this checkout and data directory. Stop the other process or set COORDINATOR_PORT."
     }
     if (Test-LiveCoordinator) {
         Start-Process $address
         exit
     }
-    $dataPath = $env:COORDINATOR_DATA_DIR
-    if (-not $dataPath) { $basePath = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { $env:USERPROFILE }; $dataPath = Join-Path $basePath 'AgentCoordinatorMCP' }
-    if (-not [IO.Path]::IsPathRooted($dataPath)) { throw 'COORDINATOR_DATA_DIR must be absolute.' }
     New-Item -ItemType Directory -Path $dataPath -Force | Out-Null
     if (-not (Test-Path (Join-Path $appRoot 'node_modules/@modelcontextprotocol/server/package.json'))) {
         $npmPath = (Get-Command npm.cmd -ErrorAction Stop).Source

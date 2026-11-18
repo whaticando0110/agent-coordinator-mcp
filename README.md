@@ -28,6 +28,10 @@ Mở `http://127.0.0.1:4330`. Trên Windows cũng có thể bấm đúp `Open Co
 
 Trong **Kết nối MCP**, sao chép đoạn cấu hình tương ứng vào từng app và giữ nguyên các mục hiện có. Cả hai mục mới dùng tên `agent_coordinator_standalone`, với danh tính `codex` hoặc `antigravity` và cùng kho dữ liệu. Nạp lại cấu hình của app sau khi thêm. Khi agent bắt đầu làm việc, yêu cầu agent gọi `coordinator_inbox` và `coordinator_list_tasks`.
 
+`npm run doctor` kiểm tra cổng, checkout/kho đang phục vụ, thư viện và tình trạng bridge mà không tạo SQLite hay chỉnh cấu hình. Dùng `npm --silent run doctor -- --json` nếu cần kết quả để xử lý bằng máy. Nếu trên cổng đã có dashboard của kho khác, launcher Windows báo lỗi và không tự mở nhầm kho. Dừng đúng tiến trình hoặc chọn `COORDINATOR_PORT` khác.
+
+Tab **Kết nối MCP** cho biết lần gọi công cụ cuối của từng bên, bridge có tìm được tệp chạy hay không, chat đích đã bật chưa, số việc chờ chuyển và số lời nhắc cần kiểm tra thủ công. “Lần gọi cuối” không chứng minh agent đang online; tìm được tệp bridge không chứng minh app sẽ chấp nhận lời nhắc.
+
 ## Đánh thức chat đã chọn (tùy chọn trên Windows)
 
 Dashboard và hai kết nối MCP có thể dùng độc lập với worker. Nếu muốn đánh thức chat, người dùng chủ động cài sidecar và bật từng chat UUID trên dashboard:
@@ -39,6 +43,10 @@ Dashboard và hai kết nối MCP có thể dùng độc lập với worker. N�
 Dùng executable native của app. Installer tạo sidecar `agent-coordinator-standalone`, lưu đường dẫn bridge trong kho đã chọn và sao lưu tệp cấu hình cũ trước khi ghi. Nếu dùng `COORDINATOR_DATA_DIR` tùy chỉnh, truyền cùng đường dẫn cho launcher, installer và hai kết nối MCP. Để tắt worker, đặt `sidecars.agent-coordinator-standalone.enabled=false` trong cấu hình Antigravity rồi tải lại app. Cài đặt bản tách không thay sidecar cũ.
 
 Máy và app phải đang chạy, chat phải được chọn và bật. Worker chuyển lời nhắc qua CLI của host. Trạng thái **Đã chuyển** chỉ nói bridge nhận được lệnh; **Chat đã nhận qua MCP** xuất hiện sau khi đúng agent gọi `coordinator_ack_wake`. Đó là biên nhận riêng với đọc tin và tiến độ công việc. Timeout hay kết quả không rõ cần kiểm lại chat trước khi gửi lại. Tùy chọn `codex.resume` không bật mặc định; bản phát hành này chưa nghiệm thu resume qua managed daemon.
+
+Nếu bridge bị thiếu hoặc cấu hình lỗi, worker giữ nguyên yêu cầu đang chờ và vẫn xử lý bên còn lại nếu đủ cấu hình. Khi sửa đúng bridge, các yêu cầu còn chờ có thể được gửi; trước khi sửa, tắt chat đích nếu muốn hủy hàng đợi cũ. Lưu lại cùng chat và cùng trạng thái sẽ giữ hàng đợi; đổi chat hoặc tắt sẽ hủy yêu cầu chưa gửi. Những lượt đã nhận nhưng chưa rõ kết quả không được gửi lại tự động.
+
+Lần đầu dùng thật, hãy thêm mục MCP mới và cho mỗi bên gọi `coordinator_list_tasks` để thấy dấu truy cập đúng dashboard. Sau đó chọn chat thử riêng, bật đánh thức và giao một việc mẫu cho từng bên. Đối chiếu **Đã chuyển → Chat đã nhận qua MCP → đã đọc tin** trước khi dùng cho chat công việc. Các bước này không cần đổi cấu hình hay kho của bản gốc.
 
 ## Kiến trúc và kiểm thử
 
