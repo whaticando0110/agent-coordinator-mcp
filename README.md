@@ -84,6 +84,8 @@ Tab **Kết nối MCP** cho biết lần gọi công cụ cuối, bridge có tì
 
 Ví dụ: giao cho Codex việc **“Sửa nút Chơi ngay trên điện thoại”**, chọn Antigravity review và ghi tiêu chí **“Mở được trận thử ở màn hình 390 px”**. Codex lấy revision hiện tại bằng `coordinator_task`, cập nhật tiến độ rồi gọi `coordinator_review_task` với `action: "submit"`. Antigravity dùng `"changes"` kèm lý do nếu cần sửa, hoặc `"recommend"` để chuyển chủ dự án duyệt. Khi hoàn tất kiểm tra, bạn bấm **Nghiệm thu công việc** trên dashboard.
 
+Ở tab **Công việc**, bấm `/` để đưa con trỏ vào ô tìm. Có thể gõ tiếng Việt có dấu hoặc không dấu, rồi lọc thêm theo người phụ trách và trạng thái. Ô **Cần chú ý** gom việc đang vướng và chờ review. Trên màn hình nhỏ, mở chi tiết rồi bấm **Danh sách công việc** để quay lại bộ lọc đang dùng. Trong **Hộp thư**, bật **Chỉ hiện tin chưa đọc** khi cần xử lý các tin mới.
+
 ## Đánh thức Codex và Antigravity (tùy chọn trên Windows)
 
 Dashboard và hai kết nối MCP có thể dùng độc lập với worker. Nếu muốn đánh thức chat, người dùng chủ động cài sidecar và bật từng chat UUID trên dashboard:

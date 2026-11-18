@@ -3,6 +3,9 @@ const workId = new URLSearchParams(location.search).get('workspace') || 'local';
 const labels = { queued: 'Chờ nhận', in_progress: 'Đang làm', blocked: 'Đang vướng', review: 'Chờ review', done: 'Hoàn tất' };
 const names = Object.assign(Object.create(null), { user: 'Bạn', codex: 'Codex', antigravity: 'Antigravity', all: 'Hộp thư chung' });
 const state = { board: null, selected: null, detail: null, dirty: false, messages: new Map(), view: 'tasks' };
+const detailPlaceholder = $('#task-detail').firstElementChild.cloneNode(true);
+const narrowWorkspace = matchMedia('(max-width: 960px)');
+let taskSelectionRequest = 0;
 let noticeTimer;
 let refreshing, demoPending = false;
 let profileVersion = 0, profileKey, profileSnippet;
@@ -32,10 +35,17 @@ function element(tag, className, value) {
 function showNotice(message, error = false) {
   clearTimeout(noticeTimer);
   const notice = $('#notice');
-  notice.textContent = message;
+  $('#notice-text').textContent = message;
   notice.className = error ? 'notice error' : 'notice';
   notice.hidden = false;
-  noticeTimer = setTimeout(() => { notice.hidden = true; }, 6500);
+  if (!error) noticeTimer = setTimeout(() => { notice.hidden = true; }, 5500);
+}
+
+function connectionStatus(value, label) {
+  const badge = $('#connection-state');
+  badge.dataset.state = value;
+  if (badge.textContent !== label) badge.textContent = label;
+  $('#connection-retry').hidden = value !== 'offline';
 }
 
 async function api(url, method = 'GET', body) {
@@ -55,7 +65,12 @@ function time(at) {
 }
 
 function statusBadge(status) { return element('span', `status ${status}`, labels[status]); }
-function ownerBadge(owner) { return element('span', `owner-chip ${owner}`, names[owner]); }
+function ownerBadge(owner) { return element('span', `owner-chip ${owner}`, names[owner] ?? owner); }
+function timeStamp(at) {
+  const node = element('time', '', time(at));
+  node.dateTime = new Date(at).toISOString();
+  return node;
+}
 function progress(value) {
   const node = element('progress');
   node.max = 100; node.value = value;
@@ -82,93 +97,167 @@ function renderBoard() {
   }
   renderProfileSeen();
   $('#task-count').textContent = tasks.length;
+  $('#task-count').hidden = !tasks.length;
   $('#message-count').textContent = state.board.userUnread;
-  const summary = $('#summary');
-  summary.replaceChildren();
-  for (const [label, count, caption] of [
-    ['Tổng công việc', tasks.length, 'đã giao'],
-    ['Đang thực hiện', tasks.filter(task => task.status === 'in_progress').length, 'đang làm'],
-    ['Chờ trao đổi', tasks.filter(task => ['blocked', 'review'].includes(task.status)).length, 'cần chú ý'],
-    ['Đã hoàn tất', tasks.filter(task => task.status === 'done').length, 'công việc']
-  ]) {
-    const card = element('div', 'stat');
-    const value = element('strong', '', count);
-    value.append(element('em', '', caption));
-    card.append(element('span', 'stat-label', label), value);
-    summary.append(card);
-  }
+  $('#message-count').hidden = !state.board.userUnread;
   const agents = $('#agents');
   agents.replaceChildren();
   for (const agent of state.board.agents) {
     const card = element('div', 'agent-card');
     const info = element('div');
+    const host = agent.appLabel || appLabels[agent.app];
+    const extra = [host === agent.name ? '' : host, agent.model, { paused: 'Tạm ngưng', archived: 'Đã lưu trữ' }[agent.state]].filter(Boolean);
     info.append(element('div', 'agent-name', names[agent.actor]), element('div', 'agent-subtitle',
-      agent.lastSeen ? `MCP truy cập lúc ${time(agent.lastSeen)}` : 'Chờ app truy cập MCP'),
-      element('div', 'hint', [agent.appLabel || appLabels[agent.app], agent.model,
-        { paused: 'Tạm ngưng', archived: 'Đã lưu trữ' }[agent.state]].filter(Boolean).join(' · ')));
+      agent.lastSeen ? `MCP · ${time(agent.lastSeen)}` : 'Chưa gọi MCP'));
+    if (extra.length) info.append(element('div', 'hint', extra.join(' · ')));
     const stats = element('div', 'agent-stats');
-    stats.append(element('b', '', `${tasks.filter(task => task.owner === agent.actor && task.status !== 'done').length} việc đang mở`),
-      element('small', '', `${agent.unread} tin chưa xác nhận đọc`));
-    card.append(element('span', `avatar ${agent.actor}`, agent.actor === 'codex' ? '⌘' : agent.name.slice(0, 1).toUpperCase()), info, stats);
+    stats.append(element('b', '', `${tasks.filter(task => task.owner === agent.actor && task.status !== 'done').length} việc mở`),
+      element('small', '', `${agent.unread} chưa đọc`));
+    card.append(element('span', `avatar ${agent.actor}`, agent.name.slice(0, 1).toUpperCase()), info, stats);
     agents.append(card);
   }
   renderTasks();
   const taskSelect = $('#message-task');
-  const optionsKey = JSON.stringify(tasks.map(task => [task.id, task.owner, task.title]));
-  if (taskSelect.dataset.optionsKey !== optionsKey) {
-    const selected = taskSelect.value;
-    taskSelect.replaceChildren(new Option('Trao đổi chung', ''));
-    for (const task of tasks) taskSelect.add(new Option(`${names[task.owner]} · ${task.title}`, task.id));
-    taskSelect.value = selected;
-    taskSelect.dataset.optionsKey = optionsKey;
+  choices(taskSelect, [['', 'Trao đổi chung'], ...tasks.map(task => [task.id, `${names[task.owner]} · ${task.title}`])]);
+}
+
+const attentionStatus = status => status === 'blocked' || status === 'review';
+function renderSummary() {
+  const tasks = state.board.tasks;
+  const summary = $('#summary');
+  const rows = [
+    ['', 'Tất cả công việc', tasks.length],
+    ['in_progress', 'Đang làm', tasks.filter(task => task.status === 'in_progress').length],
+    ['attention', 'Cần chú ý', tasks.filter(task => attentionStatus(task.status)).length],
+    ['done', 'Hoàn tất', tasks.filter(task => task.status === 'done').length]
+  ];
+  const key = JSON.stringify(rows);
+  if (summary.dataset.rows !== key) {
+    const focusedFilter = summary.contains(document.activeElement) ? document.activeElement.dataset.filter : null;
+    summary.dataset.rows = key;
+    summary.replaceChildren(...rows.map(([value, title, count]) => {
+      const card = element('button', 'stat');
+      card.type = 'button';
+      card.dataset.filter = value;
+      const dot = element('span', 'stat-dot'); dot.setAttribute('aria-hidden', 'true');
+      card.append(dot, element('span', 'stat-label', title), element('strong', '', count));
+      card.setAttribute('aria-label', `${title}: ${count}`);
+      card.addEventListener('click', () => {
+        if (narrowWorkspace.matches && state.selected && !closeTask(false)) return;
+        $('#status-filter').value = value;
+        renderTasks();
+      });
+      return card;
+    }));
+    [...summary.children].find(button => button.dataset.filter === focusedFilter)?.focus({ preventScroll: true });
   }
+  for (const card of summary.children)
+    card.setAttribute('aria-pressed', String(card.dataset.filter === $('#status-filter').value));
+}
+
+const searchText = text => text.toLowerCase().normalize('NFD').replace(/\p{M}/gu, '').replaceAll('đ', 'd');
+function resetTaskFilters() {
+  $('#task-search').value = $('#owner-filter').value = $('#status-filter').value = '';
+  renderTasks();
+  $('#task-search').focus();
 }
 
 function renderTasks() {
   if (!state.board) return;
-  const tasks = state.board.tasks.filter(task => (!$('#owner-filter').value || task.owner === $('#owner-filter').value) &&
-    (!$('#status-filter').value || task.status === $('#status-filter').value));
-  $('#filtered-count').textContent = `${tasks.length} công việc`;
+  const owner = $('#owner-filter').value, status = $('#status-filter').value, query = $('#task-search').value.trim();
+  const tokens = query ? searchText(query).split(/\s+/) : [];
+  const tasks = state.board.tasks.filter(task => {
+    if (owner && task.owner !== owner) return false;
+    if (status === 'attention' ? !attentionStatus(task.status) : status && task.status !== status) return false;
+    if (!tokens.length) return true;
+    const haystack = searchText([task.title, task.details, task.owner, names[task.owner]].filter(Boolean).join(' '));
+    return tokens.every(token => haystack.includes(token));
+  });
+  const filtered = Boolean(owner || status || query);
+  const count = filtered ? `${tasks.length}/${state.board.tasks.length} việc` : `${tasks.length} việc`;
+  if ($('#filtered-count').textContent !== count) $('#filtered-count').textContent = count;
+  $('#task-clear').hidden = !filtered;
+  renderSummary();
   const list = $('#task-list');
-  const renderKey = JSON.stringify([tasks, state.selected]);
+  const renderKey = JSON.stringify([tasks, state.selected, filtered, tasks.map(task => names[task.owner])]);
   if (list.dataset.renderKey === renderKey) return;
+  const cardFocus = list.contains(document.activeElement) ? document.activeElement.dataset.taskId : null;
   list.dataset.renderKey = renderKey;
   list.replaceChildren();
   if (!tasks.length) {
-    const blank = element('div', 'empty-state');
-    blank.append(element('span', 'empty-icon', '＋'), element('h2', '', state.board.tasks.length ? 'Chưa có việc khớp bộ lọc.' : 'Bắt đầu bằng một việc cụ thể.'),
-      element('p', '', 'Chọn bên phụ trách và mô tả kết quả bạn cần.'));
+    const blank = element('div', 'empty-state'), icon = element('span', 'empty-icon', filtered ? '⌕' : '＋');
+    icon.setAttribute('aria-hidden', 'true');
+    blank.append(icon, element('h2', '', filtered ? 'Không có công việc phù hợp' : 'Chưa có công việc'),
+      element('p', '', filtered ? 'Thử từ khóa khác hoặc xóa bộ lọc để xem lại tất cả công việc.' : 'Giao việc đầu tiên để bắt đầu theo dõi tiến độ.'));
     list.append(blank);
   }
   for (const task of tasks) {
     const card = element('button', `task-card${state.selected === task.id ? ' selected' : ''}`);
     card.type = 'button';
+    card.dataset.taskId = task.id;
+    card.setAttribute('aria-pressed', String(state.selected === task.id));
     const top = element('div', 'task-top');
-    top.append(ownerBadge(task.owner), element('span', '', time(task.updated_at)));
+    top.append(ownerBadge(task.owner), timeStamp(task.updated_at));
     const bottom = element('div', 'task-bottom');
     bottom.append(statusBadge(task.status), progress(task.progress), element('span', 'progress-number', `${task.progress}%`));
     card.append(top, element('h3', '', task.title), bottom);
-    card.addEventListener('click', () => selectTask(task.id));
+    card.addEventListener('click', () => selectTask(task.id, { focus: true, confirmDiscard: true }).catch(error => showNotice(error.message, true)));
     list.append(card);
   }
+  if (cardFocus) ([...list.children].find(card => card.dataset.taskId === cardFocus) ?? $('#task-search')).focus({ preventScroll: true });
 }
 
-async function selectTask(id) {
+function canDiscardTask() {
+  return !state.dirty || window.confirm('Bạn có thay đổi chưa lưu. Quay đi và bỏ thay đổi?');
+}
+
+function closeTask(restoreFocus = true) {
+  if (!canDiscardTask()) return false;
+  taskSelectionRequest++;
+  const was = state.selected;
+  state.selected = null; state.detail = null; state.dirty = false;
+  delete $('#task-workspace').dataset.detail;
+  $('#task-detail').replaceChildren(detailPlaceholder.cloneNode(true));
+  renderTasks();
+  if (restoreFocus) (Array.from($('#task-list').children).find(card => card.dataset.taskId === was) ?? $('#task-search')).focus();
+  return true;
+}
+
+async function selectTask(id, { focus = false, confirmDiscard = false } = {}) {
+  if (confirmDiscard && state.selected === id && state.detail) { focusTaskTitle(); return; }
+  if (confirmDiscard && !canDiscardTask()) return;
+  const request = ++taskSelectionRequest;
+  const detail = await api(`/api/tasks/${id}`);
+  if (request !== taskSelectionRequest) return;
   state.selected = id;
   state.dirty = false;
-  const detail = await api(`/api/tasks/${id}`);
-  if (state.selected !== id) return;
   state.detail = detail;
+  $('#task-workspace').dataset.detail = 'open';
   renderDetail(detail);
   renderTasks();
+  if (focus) focusTaskTitle();
+}
+
+function focusTaskTitle() {
+  const heading = $('#task-detail .detail-title');
+  if (!heading || state.view !== 'tasks') return;
+  heading.focus({ preventScroll: true });
+  if (narrowWorkspace.matches) $('#task-detail').scrollIntoView({ block: 'start' });
 }
 
 function renderDetail({ task, review, events, messages }) {
   const panel = $('#task-detail');
   panel.replaceChildren();
+  const back = element('button', 'secondary detail-back', '← Danh sách công việc');
+  back.type = 'button';
+  back.addEventListener('click', () => closeTask());
   const meta = element('div', 'detail-meta');
   meta.append(ownerBadge(task.owner), statusBadge(task.status), element('span', 'muted', `Giao bởi ${names[task.created_by]}`));
-  panel.append(meta, element('h2', 'detail-title', task.title), element('p', 'detail-description', task.details || 'Chưa có mô tả bổ sung.'));
+  const heading = element('h2', 'detail-title', task.title); heading.tabIndex = -1;
+  const overview = element('div', 'detail-progress');
+  overview.append(element('span', 'muted', 'Tiến độ'), element('strong', '', `${task.progress}%`), progress(task.progress));
+  panel.append(back, meta, heading, element('p', 'detail-description', task.details || 'Chưa có mô tả bổ sung.'), overview);
+  if (review && !state.board.demo) renderTaskWorkflow(panel, task, review);
   const form = document.createElement('form');
   form.innerHTML = `<div class="form-row"><label>Trạng thái<select name="status"></select></label><label>Tiến độ (%)<input type="number" name="progress" min="0" max="100" required></label></div>
     <label>Cập nhật mới nhất<textarea name="note" rows="3" maxlength="4000" placeholder="Đã làm gì, đang vướng gì, cần ai phản hồi…"></textarea></label>
@@ -191,8 +280,8 @@ function renderDetail({ task, review, events, messages }) {
     showNotice('Đã lưu tiến độ. Hai bên có thể đọc cập nhật qua MCP.');
   }));
   if (!state.board.demo && (!review || review.stage === 'work')) panel.append(form);
-  else panel.append(element('p', 'hint', `Tiến độ ${task.progress}%${task.note ? ` · ${task.note}` : ''}`));
-  if (!state.board.demo) renderTaskWorkflow(panel, task, review);
+  else if (task.note) panel.append(element('p', 'hint', `Cập nhật cuối: ${task.note}`));
+  if (!review && !state.board.demo) renderTaskWorkflow(panel, task, review);
   const discussion = element('button', 'text-button', '↗ Trao đổi về công việc này');
   discussion.addEventListener('click', () => {
     setView('inbox');
@@ -223,6 +312,17 @@ function renderTaskWorkflow(panel, task, flow) {
   const section = element('section', 'workflow');
   section.append(element('h3', '', 'Bàn giao và review'));
   if (flow) {
+    const steps = element('ol', 'review-track');
+    const phase = { work: 0, review: 1, approval: 2, approved: 3 }[flow.stage];
+    for (const [index, label] of ['Thực hiện', 'Review', 'Nghiệm thu'].entries()) {
+      const item = element('li', index < phase ? 'complete' : '', label);
+      const number = element('span', '', index < phase ? '✓' : index + 1);
+      number.setAttribute('aria-hidden', 'true');
+      item.prepend(number);
+      if (index === phase) item.setAttribute('aria-current', 'step');
+      steps.append(item);
+    }
+    section.append(steps);
     section.append(element('p', '', `${{ work:'Đang làm', review:'Chờ người review', approval:'Chờ chủ dự án duyệt', approved:'Đã nghiệm thu' }[flow.stage]} · Review: ${names[flow.reviewer] ?? flow.reviewer}`),
       element('p', 'workflow-criteria', flow.criteria));
   }
@@ -287,19 +387,26 @@ function renderTaskWorkflow(panel, task, flow) {
 
 function renderMessages() {
   const panel = $('#messages');
+  const unread = message => !message.read_at && message.author !== 'user';
+  const all = [...state.messages.values()].sort((a, b) => b.id - a.id);
+  const onlyUnread = $('#inbox-unread').checked;
+  const messages = onlyUnread ? all.filter(unread) : all;
+  $('#mark-read').disabled = !all.some(unread);
+  const key = JSON.stringify([messages, onlyUnread, messages.map(item => [names[item.author], names[item.recipient], state.board?.tasks.find(task => task.id === item.task_id)?.title])]);
+  if (panel.dataset.items === key) return;
+  panel.dataset.items = key;
   panel.replaceChildren();
-  const messages = [...state.messages.values()].sort((a, b) => b.id - a.id);
-  if (!messages.length) panel.append(element('div', 'empty-state', 'Hộp thư đang trống. Gửi yêu cầu đầu tiên cho một bên hoặc cả hai.'));
+  if (!messages.length) panel.append(element('div', 'empty-state', onlyUnread ? 'Không có tin chưa đọc trong danh sách này.' : 'Hộp thư chưa có tin nhắn.'));
   for (const message of messages) {
-    const row = element('article', `message${!message.read_at && message.author !== 'user' ? ' unread' : ''}`);
+    const row = element('article', `message${unread(message) ? ' unread' : ''}`);
     row.id = `message-${message.id}`;
     const header = element('div', 'message-head');
-    header.append(element('b', '', names[message.author]), element('span', 'muted', `→ ${names[message.recipient]}`), element('time', '', time(message.created_at)));
+    header.append(element('b', '', names[message.author]), element('span', 'muted', `→ ${names[message.recipient]}`), timeStamp(message.created_at));
     row.append(header, element('p', '', message.body));
     if (message.task_id) {
       const task = state.board?.tasks.find(item => item.id === message.task_id);
       const link = element('button', 'message-task', `↗ ${task?.title || 'Xem công việc'}`);
-      link.addEventListener('click', () => { setView('tasks'); selectTask(message.task_id).catch(error => showNotice(error.message, true)); });
+      link.addEventListener('click', () => { setView('tasks'); selectTask(message.task_id, { focus: true, confirmDiscard: true }).catch(error => showNotice(error.message, true)); });
       row.append(link);
     }
     panel.append(row);
@@ -324,12 +431,14 @@ async function loadBoard() {
     const demo = state.board.demo;
     $('#data-location').textContent = demo ? 'Kho tạm · chỉ dùng dữ liệu mẫu' : state.board.dataDirectory;
     $('#backup-workspace-path').textContent = demo ? '' : `Kho đang xem: ${state.board.dataDirectory}`;
-    $('#connection-state').textContent = 'Đã đồng bộ với kho local';
-    $('#new-task').hidden = $('#compose-panel').hidden = $('#mark-read').hidden = $('#connection-setup').hidden = Boolean(demo);
+    connectionStatus(demo ? 'demo' : 'live', demo ? 'Dữ liệu mẫu' : 'Kho local');
+    $('#new-task').hidden = Boolean(demo) || state.view !== 'tasks';
+    $('#compose-panel').hidden = $('#mark-read').hidden = $('#connection-setup').hidden = Boolean(demo);
     $('#queue-nav').hidden = Boolean(demo);
     $('#workspace-controls').hidden = Boolean(demo);
     choices($('#workspace-select'), state.board.workspaces.map(space => [space.id, space.name]));
     $('#workspace-select').value = state.board.workspace;
+    $('#workspace-name').textContent = demo ? 'Demo điều phối' : state.board.workspaces.find(space => space.id === state.board.workspace)?.name ?? 'Không gian mặc định';
     renderDemo(demo);
     renderBoard();
     renderWake();
@@ -343,14 +452,18 @@ async function loadBoard() {
       }
     }
   } catch (error) {
-    $('#connection-state').textContent = 'Đang mất kết nối · tự thử lại';
-    if (!state.board) showNotice(error.message, true);
+    const firstFailure = $('#connection-state').dataset.state !== 'offline';
+    connectionStatus('offline', 'Mất kết nối');
+    if (!state.board) {
+      const loading = $('#task-list .loading-copy');
+      if (loading) loading.textContent = 'Chưa tải được công việc. Thử kết nối lại.';
+      if (firstFailure) showNotice(error.message, true);
+    }
   }
 }
 
 function renderDemo(demo) {
   $('#demo-panel').hidden = !demo;
-  $('.local-badge').textContent = demo ? '● DEMO' : '● LOCAL';
   if (!demo) return;
   const list = $('#demo-steps'), next = $('#demo-next');
   const complete = demo.step === demo.steps.length;
@@ -388,12 +501,18 @@ $('#demo-next').addEventListener('click', async () => {
 
 function setView(view) {
   state.view = view;
-  const titles = { tasks: ['Cùng làm, rõ từng việc.', 'Giao việc, trao đổi và theo dõi các agent trong một không gian.'],
-    inbox: ['Trao đổi có ngữ cảnh.', 'Tin nhắn chung và yêu cầu gửi riêng cho từng bên.'],
-    connections: ['Kết nối app bạn đang dùng.', 'Chọn hồ sơ app và model, rồi thử kết nối MCP.'],
-    queue: ['Theo dõi từng lời nhắc.', 'Xem tiến độ chuyển và biên nhận từ đúng chat đã chọn.'] };
+  const titles = { tasks: ['Công việc', 'Giao việc, theo dõi tiến độ và review trong dự án này.'],
+    inbox: ['Hộp thư', 'Đọc tin chung hoặc trao đổi riêng theo từng công việc.'],
+    connections: ['Kết nối MCP', 'Quản lý hồ sơ agent, cấu hình và chat đích.'],
+    queue: ['Lời nhắc', 'Kiểm tra trạng thái chuyển và biên nhận MCP.'] };
   for (const name of Object.keys(titles)) $(`#${name}-view`).hidden = name !== view;
-  for (const button of document.querySelectorAll('[data-view]')) button.classList.toggle('active', button.dataset.view === view);
+  for (const button of document.querySelectorAll('[data-view]')) {
+    const active = button.dataset.view === view;
+    button.classList.toggle('active', active);
+    if (active) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  }
+  $('#new-task').hidden = view !== 'tasks' || Boolean(state.board?.demo);
   [$('#view-title').textContent, $('#view-subtitle').textContent] = titles[view];
   if (view === 'queue') loadQueue().catch(error => showNotice(error.message, true));
 }
@@ -402,9 +521,14 @@ async function submitForm(event, work) {
   event.preventDefault();
   const button = event.currentTarget.querySelector('[type=submit]');
   if (button.disabled) return;
+  const feedback = event.currentTarget.querySelector('[data-form-error]');
+  if (feedback) feedback.hidden = true;
   button.disabled = true;
   try { await work(); }
-  catch (error) { showNotice(error.message, true); }
+  catch (error) {
+    if (feedback) { feedback.textContent = error.message; feedback.hidden = false; }
+    else showNotice(error.message, true);
+  }
   finally { button.disabled = false; }
 }
 
@@ -414,10 +538,34 @@ function withRequestId(form, input) {
   return { ...input, requestId: form.dataset.requestId };
 }
 
-for (const button of document.querySelectorAll('[data-view]')) button.addEventListener('click', () => setView(button.dataset.view));
+for (const button of document.querySelectorAll('[data-view]')) button.addEventListener('click', () => {
+  setView(button.dataset.view);
+  $('#view-title').focus({ preventScroll: true });
+});
 $('#owner-filter').addEventListener('change', renderTasks);
 $('#status-filter').addEventListener('change', renderTasks);
-$('#new-task').addEventListener('click', () => $('#task-dialog').showModal());
+$('#task-search').addEventListener('input', renderTasks);
+$('#task-clear').addEventListener('click', resetTaskFilters);
+$('#task-detail').addEventListener('input', () => { state.dirty = true; });
+$('#inbox-unread').addEventListener('change', renderMessages);
+$('#notice-close').addEventListener('click', () => { $('#notice').hidden = true; clearTimeout(noticeTimer); });
+$('#connection-retry').addEventListener('click', async () => {
+  await refresh();
+  if ($('#connection-state').dataset.state !== 'offline') $('#notice').hidden = true;
+});
+$('#agents-manage').addEventListener('click', () => { setView('connections'); $('#view-title').focus(); });
+$('#new-task').addEventListener('click', () => {
+  $('[data-form-error]').hidden = true;
+  $('#task-dialog').showModal();
+  $('#task-form').elements.title.focus();
+});
+document.addEventListener('keydown', event => {
+  if (event.key !== '/' || event.altKey || event.ctrlKey || event.metaKey || event.isComposing ||
+      event.target.closest?.('input, textarea, select, [contenteditable]') || $('#task-dialog').open || !state.board || state.view !== 'tasks') return;
+  if (narrowWorkspace.matches && state.selected && !closeTask(false)) return;
+  event.preventDefault();
+  $('#task-search').focus();
+});
 const taskTemplates = {
   implementation: 'Mục tiêu:\n\nPhạm vi thay đổi:\n\nCách kiểm thử:\n\nTiêu chí nghiệm thu:\n',
   review: 'PR / phiên bản cần review:\n\nĐiểm cần chú ý:\n\nKiểm thử kỳ vọng:\n\nKết quả cần bàn giao:\n',
@@ -443,10 +591,11 @@ $('#task-form').addEventListener('submit', event => submitForm(event, async () =
   const form = $('#task-form');
   const result = await api('/api/tasks', 'POST', withRequestId(form, Object.fromEntries(new FormData(form))));
   form.reset(); delete form.dataset.fingerprint;
+  $('#task-search').value = $('#owner-filter').value = $('#status-filter').value = '';
   $('#task-dialog').close();
   setView('tasks');
   await refresh();
-  await selectTask(result.task.id);
+  await selectTask(result.task.id, { focus: true });
   showNotice(`Đã giao việc cho ${names[result.task.owner]}.`);
 }));
 $('#message-form').addEventListener('submit', event => submitForm(event, async () => {
@@ -570,18 +719,23 @@ async function loadQueue() {
   list.replaceChildren();
   if (!jobs.length) list.append(element('p', 'hint', 'Không có lời nhắc khớp với bộ lọc.'));
   for (const job of jobs) {
-    const row = element('article', 'queue-row');
-    row.append(element('strong', '', `#${job.id} · ${names[job.actor]} · ${queueLabels[job.delivery]}`),
+    const row = element('article', 'queue-row'), header = element('div', 'queue-header');
+    header.append(element('strong', '', `#${job.id} · ${names[job.actor]}`), element('span', `status ${job.delivery}`, queueLabels[job.delivery]));
+    if (job.overdue) header.append(element('span', 'queue-wait', 'Đã chờ trên 2 phút'));
+    row.append(header,
       element('p', 'hint', [`Xếp hàng: ${time(job.created_at)}`, job.attempted_at && `Lần chuyển: ${time(job.attempted_at)}`,
-        job.acknowledged_at && `ACK: ${time(job.acknowledged_at)}`, job.overdue && 'Đã chờ trên 2 phút'].filter(Boolean).join(' · ')));
+        job.acknowledged_at && `ACK: ${time(job.acknowledged_at)}`].filter(Boolean).join(' · ')));
     if (job.error) row.append(element('p', '', job.error));
     const actions = element('div', 'setup-actions');
     if (job.task_id || job.message_id) {
       const source = element('button', 'secondary', job.task_id ? 'Mở công việc' : `Mở tin #${job.message_id}`);
       source.addEventListener('click', async () => {
         try {
-          if (job.task_id) { setView('tasks'); await selectTask(job.task_id); }
-          else { setView('inbox'); await loadMessages(job.message_id + 1); $(`#message-${job.message_id}`)?.scrollIntoView({ block: 'center' }); }
+          if (job.task_id) { setView('tasks'); await selectTask(job.task_id, { focus: true, confirmDiscard: true }); }
+          else {
+            setView('inbox'); $('#inbox-unread').checked = false;
+            await loadMessages(job.message_id + 1); $(`#message-${job.message_id}`)?.scrollIntoView({ block: 'center' });
+          }
         } catch (error) { showNotice(error.message, true); }
       });
       actions.append(source);
