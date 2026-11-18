@@ -2,18 +2,18 @@
 
 Một dashboard local để giao việc, review, trao đổi và xác nhận đã nhận lời nhắc. Codex, Antigravity và các app hỗ trợ MCP STDIO kết nối bằng hồ sơ riêng; mỗi dự án có kho SQLite độc lập.
 
-## Cài bản đang phát triển từ GitHub
+## Cài từ GitHub
 
 Cài Git và Node.js 24 trở lên. Chạy các lệnh sau trong thư mục bạn muốn đặt app:
 
 ```sh
-git clone --branch codex/standalone-mcp https://github.com/whaticando0110/agent-coordinator-mcp.git
+git clone --branch main https://github.com/whaticando0110/agent-coordinator-mcp.git
 cd agent-coordinator-mcp
 node --version
 npm ci --ignore-scripts
 ```
 
-Bản ở nhánh `codex/standalone-mcp` đang được review trong [PR #1](https://github.com/whaticando0110/agent-coordinator-mcp/pull/1). Từ checkout này, chọn **`npm run demo`** để xem thử hoặc **`npm run serve`** để dùng kho thật. Repo riêng tư: tài khoản dùng Git phải có quyền truy cập.
+Trong thư mục repo, chạy **`npm run demo`** để xem thử hoặc **`npm run serve`** để dùng kho thật. Tài khoản dùng Git cần có quyền truy cập repo riêng tư.
 
 Nếu bạn đã dùng một bản trước, hãy sao lưu với bản đang chạy trước khi nâng cấp kho. Dừng dashboard và worker cũ trước khi mở mã mới, rồi nạp lại kết nối MCP trong các app đã cấu hình.
 
